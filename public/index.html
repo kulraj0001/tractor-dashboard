@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>🚜 PAU Tractor Dashboard</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+  <!-- Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial;
+      background: #1a1a2e;
+      color: white;
+    }
+
+    #map {
+      height: 100vh;
+    }
+
+    .info {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(0,0,0,0.8);
+      padding: 20px;
+      border-radius: 15px;
+      backdrop-filter: blur(10px);
+      z-index: 1000;
+      min-width: 250px;
+    }
+
+    .stat {
+      margin: 10px 0;
+      font-size: 16px;
+    }
+
+    .speed {
+      font-size: 24px;
+      font-weight: bold;
+    }
+
+    .status {
+      margin-top: 15px;
+      padding: 10px;
+      border-radius: 25px;
+      text-align: center;
+    }
+
+    .status.live {
+      background: #27ae60;
+    }
+
+    .status.error {
+      background: #e74c3c;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="map"></div>
+
+<div class="info">
+  <div class="stat">
+    <i class="fas fa-map-marker-alt"></i>
+    <span id="position">-</span>
+  </div>
+
+  <div class="stat speed">
+    <i class="fas fa-tachometer-alt"></i>
+    <span id="speed">-</span> km/h
+  </div>
+
+  <div class="stat">
+    <i class="fas fa-satellite"></i>
+    <span id="sats">-</span> satellites
+  </div>
+
+  <div class="status" id="status">Connecting...</div>
+</div>
+
+<!-- Leaflet -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Socket.IO -->
+<script src="/socket.io/socket.io.js"></script>
+
+<script>
+  // 🌍 Initialize map
+  const map = L.map('map').setView([30.8549, 75.6909], 18);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+  let marker;
+  let pathCoords = [];
+
+  let polyline = L.polyline(pathCoords, {
+    color: '#00d4ff',
+    weight: 4
+  }).addTo(map);
+
+  // 🔌 Socket connection (AUTO URL)
+  const socket = io();
+
+  socket.on('connect', () => {
+    document.getElementById('status').textContent = '🟢 LIVE';
+    document.getElementById('status').className = 'status live';
+  });
+
+  socket.on('tractorUpdate', (data) => {
+    if (!data.lat || !data.lng) return;
+
+    const lat = data.lat;
+    const lng = data.lng;
+
+    // Update UI
+    document.getElementById('position').textContent =
+      lat.toFixed(6) + ", " + lng.toFixed(6);
+
+    document.getElementById('speed').textContent =
+      (data.speed || 0).toFixed(1);
+
+    document.getElementById('sats').textContent =
+      data.sats || 0;
+
+    // 🚜 Marker
+    if (!marker) {
+      marker = L.marker([lat, lng], {
+        icon: L.divIcon({
+          html: '<div style="font-size:36px;">🚜</div>',
+          iconSize: [50, 50],
+          className: ''
+        })
+      }).addTo(map);
+    } else {
+      marker.setLatLng([lat, lng]);
+    }
+
+    // 📍 Path tracking
+    pathCoords.push([lat, lng]);
+    polyline.setLatLngs(pathCoords);
+
+    map.panTo([lat, lng]);
+  });
+</script>
+
+</body>
+</html>
