@@ -19,15 +19,18 @@ const io = new Server(server, {
 let lastData = null;
 
 // 🚜 API (ESP32 sends data here)
-app.post('/api/tractor', (req, res) => {
-  const data = req.body;
+app.post('/api/tractor', express.json(), (req, res) => {
 
-  console.log('📍 Tractor data:', data);
+  // 🔐 Simple API key protection
+  if (req.body.key !== "PAU123") {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
 
-  lastData = data;
+  console.log('📍 Tractor data:', req.body);
 
-  // Send to all connected browsers
-  io.emit('tractorUpdate', data);
+  io.emit('tractorUpdate', {
+    [req.body.tractor || 'PAU_01']: req.body
+  });
 
   res.json({ status: 'received' });
 });
