@@ -1,51 +1,119 @@
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
 const cors = require('cors');
+const { Server } = require("socket.io");
 
 const app = express();
 
-// ✅ Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
 const server = http.createServer(app);
+
+// ✅ Socket.IO setup
 const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// Store tractor data (optional)
 let lastData = null;
+let history = [];
 
-// 🚜 API (ESP32 sends data here)
-app.post('/api/tractor', express.json(), (req, res) => {
+let geofencePoints = [];
 
-  // 🔐 Simple API key protection
+let engineStart = null;
+let totalRuntime = 0;
+
+
+// 🚜 RECEIVE DATA FROM ESP32
+app.post('/api/tractor', (req, res) => {
+
   if (req.body.key !== "PAU123") {
     return res.status(403).json({ error: "Unauthorized" });
   }
 
-  console.log('📍 Tractor data:', req.body);
+  const p = req.body;
 
-  io.emit('tractorUpdate', {
-    [req.body.tractor || 'PAU_01']: req.body
+  // basic validation
+  if (!p.lat || !p.lng) {
+    return res.status(400).json({ error: "Invalid GPS data" });
+  }
+
+  lastData = {
+    lat: p.lat,
+    lng: p.lng,
+    speed: p.speed || 0,
+    sats: p.sats || 0
+  };
+
+  history.push({
+    lat: p.lat,
+    lng: p.lng,
+    speed: p.speed || 0,
+    sats: p.sats || 0,
+    time: Date.now()
   });
+
+  if (history.length > 1000) history.shift();
+
+  // runtime calculation
+  if (p.speed > 0 && !engineStart) {
+    engineStart = Date.now();
+  }
+
+  if (p.speed === 0 && engineStart) {
+    totalRuntime += (Date.now() - engineStart);
+    engineStart = null;
+  }
+
+  console.log(`📍 ${p.lat}, ${p.lng} | 🚀 ${p.speed} | 🛰 ${p.sats}`);
+
+  // ✅ Send data to frontend via WebSocket
+  io.emit("tractorUpdate", lastData);
 
   res.json({ status: 'received' });
 });
 
-// 🔌 Socket connection
-io.on('connection', (socket) => {
-  console.log('🔌 Browser connected:', socket.id);
 
-  // Send last data if available
+// 📡 LIVE DATA
+app.get('/api/tractor', (req, res) => {
+  res.json(lastData || {});
+});
+
+
+// ⏱ RUNTIME
+app.get('/api/runtime', (req, res) => {
+  let runtime = totalRuntime;
+  if (engineStart) {
+    runtime += (Date.now() - engineStart);
+  }
+  res.json({ runtime });
+});
+
+
+// 🚧 GEOFENCE
+app.post('/api/geofence', (req, res) => {
+  geofencePoints = req.body.points || [];
+  console.log("📍 Geofence saved:", geofencePoints);
+  res.json({ status: "saved" });
+});
+
+app.get('/api/geofence', (req, res) => {
+  res.json(geofencePoints);
+});
+
+
+// 🔌 SOCKET CONNECTION
+io.on("connection", (socket) => {
+  console.log("🔌 Client connected:", socket.id);
+
   if (lastData) {
-    socket.emit('tractorUpdate', lastData);
+    socket.emit("tractorUpdate", lastData);
   }
 });
 
-// 🌐 Start server
+
+// 🌐 START SERVER (RENDER FIX)
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {

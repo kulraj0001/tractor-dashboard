@@ -1,61 +1,59 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>🚜 PAU Tractor Dashboard</title>
+  <title>🚜 Smart Tractor Tracker</title>
 
-  <!-- Leaflet -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 
-  <!-- Icons -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-
   <style>
-    body {
-      margin: 0;
-      font-family: Arial;
-      background: #1a1a2e;
-      color: white;
-    }
+    body { margin: 0; font-family: Arial; }
 
-    #map {
-      height: 100vh;
-    }
+    #map { height: 100vh; }
 
-    .info {
+    .panel {
       position: absolute;
       top: 20px;
       left: 20px;
-      background: rgba(0,0,0,0.8);
-      padding: 20px;
-      border-radius: 15px;
-      backdrop-filter: blur(10px);
-      z-index: 1000;
-      min-width: 250px;
-    }
-
-    .stat {
-      margin: 10px 0;
-      font-size: 16px;
-    }
-
-    .speed {
-      font-size: 24px;
-      font-weight: bold;
-    }
-
-    .status {
-      margin-top: 15px;
+      background: white;
       padding: 10px;
-      border-radius: 25px;
-      text-align: center;
+      border-radius: 10px;
+      z-index: 1000;
+      font-size: 14px;
     }
 
-    .status.live {
-      background: #27ae60;
+    .controls {
+      position: absolute;
+      top: 50%;
+      right: 20px;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      z-index: 1000;
     }
 
-    .status.error {
-      background: #e74c3c;
+    .controls button {
+      margin: 4px 0;
+      padding: 6px;
+      border: none;
+      border-radius: 5px;
+      background: #2c7be5;
+      color: white;
+      cursor: pointer;
+    }
+
+    .alert {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: red;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 8px;
+      display: none;
+      z-index: 1000;
     }
   </style>
 </head>
@@ -64,88 +62,251 @@
 
 <div id="map"></div>
 
-<div class="info">
-  <div class="stat">
-    <i class="fas fa-map-marker-alt"></i>
-    <span id="position">-</span>
-  </div>
-
-  <div class="stat speed">
-    <i class="fas fa-tachometer-alt"></i>
-    <span id="speed">-</span> km/h
-  </div>
-
-  <div class="stat">
-    <i class="fas fa-satellite"></i>
-    <span id="sats">-</span> satellites
-  </div>
-
-  <div class="status" id="status">Connecting...</div>
+<div class="panel">
+  📍 <span id="position">-</span><br>
+  🚜 Speed: <span id="speed">-</span><br>
+  🛰️ Sats: <span id="sats">-</span><br>
+  ⏱ Runtime: <span id="runtime">0</span> sec<br>
+  📐 Area: <span id="area">0</span> m²<br>
+  Mode: <span id="mode">Follow ON</span>
 </div>
 
-<!-- Leaflet -->
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<div class="controls">
+  <button onclick="toggleFollow()">Follow</button>
+  <button onclick="startGeofence()">Start Geofence</button>
+  <button onclick="finishGeofence()">Finish Geofence</button>
+  <button onclick="clearGeofence()">Clear Geofence</button>
 
-<!-- Socket.IO -->
+  <button onclick="startSelection()">Start Area</button>
+  <button onclick="endSelection()">End Area</button>
+  <button onclick="clearArea()">Clear Area</button>
+</div>
+
+<div id="alertBox" class="alert">🚨 Tractor OUTSIDE geofence!</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 
 <script>
-  // 🌍 Initialize map
-  const map = L.map('map').setView([30.8549, 75.6909], 18);
+const map = L.map('map').setView([30.8549, 75.6909], 18);
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
+street.addTo(map);
 
-  let marker;
-  let pathCoords = [];
+// ===== SOCKET =====
+const socket = io();
 
-  let polyline = L.polyline(pathCoords, {
-    color: '#00d4ff',
-    weight: 4
-  }).addTo(map);
+// ===== VARIABLES =====
+let marker;
+let pathCoords = [];
+let polyline = L.polyline([], { color: 'blue' }).addTo(map);
 
-  // 🔌 Socket connection (AUTO URL)
-  const socket = io();
+let follow = true;
+let alertShown = false;
 
-  socket.on('connect', () => {
-    document.getElementById('status').textContent = '🟢 LIVE';
-    document.getElementById('status').className = 'status live';
-  });
+let geofenceMarkers = [];
+let areaMarkers = [];
 
-  socket.on('tractorUpdate', (data) => {
-    if (!data.lat || !data.lng) return;
+let geofencePoints = [];
+let geofencePolygon = null;
+let drawingFence = false;
 
-    const lat = data.lat;
-    const lng = data.lng;
+let selectingArea = false;
+let selectedPoints = [];
+let areaPolygon = null;
 
-    // Update UI
-    document.getElementById('position').textContent =
-      lat.toFixed(6) + ", " + lng.toFixed(6);
+// ===== FOLLOW =====
+function toggleFollow() {
+  follow = !follow;
+  document.getElementById("mode").textContent =
+    follow ? "Follow ON" : "Follow OFF";
+}
 
-    document.getElementById('speed').textContent =
-      (data.speed || 0).toFixed(1);
+map.on('dragstart zoomstart', () => {
+  follow = false;
+  document.getElementById("mode").textContent = "Follow OFF";
+});
 
-    document.getElementById('sats').textContent =
-      data.sats || 0;
+// ===== SOCKET DATA =====
+socket.on("tractorUpdate", (data) => {
 
-    // 🚜 Marker
-    if (!marker) {
-      marker = L.marker([lat, lng], {
-        icon: L.divIcon({
-          html: '<div style="font-size:36px;">🚜</div>',
-          iconSize: [50, 50],
-          className: ''
-        })
-      }).addTo(map);
-    } else {
-      marker.setLatLng([lat, lng]);
+  if (!data.lat) return;
+
+  const lat = data.lat;
+  const lng = data.lng;
+
+  document.getElementById("position").textContent =
+    lat.toFixed(6) + ", " + lng.toFixed(6);
+
+  document.getElementById("speed").textContent =
+    (data.speed || 0).toFixed(1);
+
+  document.getElementById("sats").textContent =
+    data.sats || 0;
+
+  if (!marker) marker = L.marker([lat, lng]).addTo(map);
+  else marker.setLatLng([lat, lng]);
+
+  pathCoords.push([lat, lng]);
+  if (pathCoords.length > 1000) pathCoords.shift();
+
+  polyline.setLatLngs(pathCoords);
+
+  if (geofencePoints.length > 2) {
+    const inside = isInsidePolygon([lat, lng], geofencePoints);
+
+    if (!inside && !alertShown) {
+      showAlert();
+      alertShown = true;
     }
 
-    // 📍 Path tracking
-    pathCoords.push([lat, lng]);
-    polyline.setLatLngs(pathCoords);
+    if (inside && alertShown) {
+      hideAlert();
+      alertShown = false;
+    }
+  }
 
-    map.panTo([lat, lng]);
-  });
+  if (follow) map.panTo([lat, lng]);
+});
+
+// ===== RUNTIME =====
+setInterval(async () => {
+  const res = await fetch('/api/runtime');
+  const data = await res.json();
+
+  document.getElementById("runtime").textContent =
+    (data.runtime / 1000).toFixed(1);
+}, 2000);
+
+// ===== ALERT =====
+function showAlert() {
+  document.getElementById("alertBox").style.display = "block";
+}
+function hideAlert() {
+  document.getElementById("alertBox").style.display = "none";
+}
+
+// ===== MAP CLICK =====
+map.on('click', function(e) {
+
+  if (drawingFence) {
+    const m = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
+    geofenceMarkers.push(m);
+    geofencePoints.push([e.latlng.lat, e.latlng.lng]);
+  }
+
+  if (selectingArea) {
+    const m = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
+    areaMarkers.push(m);
+    selectedPoints.push([e.latlng.lat, e.latlng.lng]);
+  }
+});
+
+// ===== GEOFENCE =====
+function startGeofence() {
+  drawingFence = true;
+  geofencePoints = [];
+
+  geofenceMarkers.forEach(m => map.removeLayer(m));
+  geofenceMarkers = [];
+
+  alert("Click to draw boundary");
+}
+
+function finishGeofence() {
+  drawingFence = false;
+
+  if (geofencePolygon) map.removeLayer(geofencePolygon);
+
+  geofencePolygon = L.polygon(geofencePoints, { color: "red" }).addTo(map);
+
+  localStorage.setItem("geofence", JSON.stringify(geofencePoints));
+}
+
+function clearGeofence() {
+  if (geofencePolygon) map.removeLayer(geofencePolygon);
+
+  geofenceMarkers.forEach(m => map.removeLayer(m));
+  geofenceMarkers = [];
+
+  geofencePoints = [];
+  localStorage.removeItem("geofence");
+
+  alert("Geofence cleared");
+}
+
+// ===== AREA =====
+function startSelection() {
+  selectingArea = true;
+  selectedPoints = [];
+
+  areaMarkers.forEach(m => map.removeLayer(m));
+  areaMarkers = [];
+}
+
+function endSelection() {
+  selectingArea = false;
+
+  if (selectedPoints.length < 3) {
+    alert("Need 3 points");
+    return;
+  }
+
+  const area = calculateArea(selectedPoints);
+  document.getElementById("area").textContent = area.toFixed(2);
+
+  if (areaPolygon) map.removeLayer(areaPolygon);
+
+  areaPolygon = L.polygon(selectedPoints, { color: "green" }).addTo(map);
+
+  areaMarkers.forEach(m => map.removeLayer(m));
+  areaMarkers = [];
+}
+
+function clearArea() {
+  if (areaPolygon) map.removeLayer(areaPolygon);
+
+  areaMarkers.forEach(m => map.removeLayer(m));
+  areaMarkers = [];
+
+  selectedPoints = [];
+
+  document.getElementById("area").textContent = "0";
+
+  alert("Area cleared");
+}
+
+// ===== POLYGON CHECK =====
+function isInsidePolygon(point, polygon) {
+  let x = point[0], y = point[1];
+  let inside = false;
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    let xi = polygon[i][0], yi = polygon[i][1];
+    let xj = polygon[j][0], yj = polygon[j][1];
+
+    let intersect =
+      ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+// ===== AREA CALC =====
+function calculateArea(points) {
+  let area = 0;
+
+  for (let i = 0; i < points.length; i++) {
+    let j = (i + 1) % points.length;
+    area += (points[i][0] * points[j][1] -
+             points[j][0] * points[i][1]);
+  }
+
+  return Math.abs(area / 2) * 111000 * 111000;
+}
 </script>
 
 </body>
