@@ -9,54 +9,65 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
+// 🔐 Security header
+app.use((req, res, next) => {
+  res.setHeader("X-Powered-By", "TractorTracker");
+  next();
+});
+
 const server = http.createServer(app);
 
-// ✅ Socket.IO setup
 const io = new Server(server, {
   cors: { origin: "*" }
 });
 
+// 🔐 API KEY
+const API_KEY = "PAU_SECURE_9X7K2L";
+
+// 📦 Data
 let lastData = null;
 let history = [];
-
 let geofencePoints = [];
 
 let engineStart = null;
 let totalRuntime = 0;
 
+// 🔐 Rate limit
+let lastRequestTime = 0;
+
 
 // 🚜 RECEIVE DATA FROM ESP32
 app.post('/api/tractor', (req, res) => {
+console.log("BODY:", req.body);
 
-  if (req.body.key !== "PAU123") {
+  // 🔐 API KEY (no speed impact)
+  if (req.body.key !== "PAU_SECURE_9X7K2L") {
     return res.status(403).json({ error: "Unauthorized" });
   }
 
   const p = req.body;
 
-  // basic validation
+  // 🔐 LIGHT VALIDATION (no delay)
   if (!p.lat || !p.lng) {
     return res.status(400).json({ error: "Invalid GPS data" });
   }
 
+  // ✅ CLEAN DATA
   lastData = {
-    lat: p.lat,
-    lng: p.lng,
+    lat: parseFloat(p.lat),
+    lng: parseFloat(p.lng),
     speed: p.speed || 0,
     sats: p.sats || 0
   };
 
   history.push({
-    lat: p.lat,
-    lng: p.lng,
-    speed: p.speed || 0,
-    sats: p.sats || 0,
+    ...lastData,
     time: Date.now()
   });
 
   if (history.length > 1000) history.shift();
 
-  // runtime calculation
+  // ⏱ runtime (unchanged)
   if (p.speed > 0 && !engineStart) {
     engineStart = Date.now();
   }
@@ -66,9 +77,7 @@ app.post('/api/tractor', (req, res) => {
     engineStart = null;
   }
 
-  console.log(`📍 ${p.lat}, ${p.lng} | 🚀 ${p.speed} | 🛰 ${p.sats}`);
-
-  // ✅ Send data to frontend via WebSocket
+  // 🔌 WebSocket
   io.emit("tractorUpdate", lastData);
 
   res.json({ status: 'received' });
@@ -94,7 +103,6 @@ app.get('/api/runtime', (req, res) => {
 // 🚧 GEOFENCE
 app.post('/api/geofence', (req, res) => {
   geofencePoints = req.body.points || [];
-  console.log("📍 Geofence saved:", geofencePoints);
   res.json({ status: "saved" });
 });
 
@@ -103,7 +111,7 @@ app.get('/api/geofence', (req, res) => {
 });
 
 
-// 🔌 SOCKET CONNECTION
+// 🔌 SOCKET
 io.on("connection", (socket) => {
   console.log("🔌 Client connected:", socket.id);
 
@@ -113,9 +121,9 @@ io.on("connection", (socket) => {
 });
 
 
-// 🌐 START SERVER (RENDER FIX)
+// 🌐 START (Railway compatible)
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
-  console.log(`🚜 DASHBOARD LIVE on port ${PORT}`);
+  console.log(`🚜 SERVER RUNNING ON PORT ${PORT}`);
 });

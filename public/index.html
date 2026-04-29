@@ -94,7 +94,9 @@ const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png')
 street.addTo(map);
 
 // ===== SOCKET =====
-const socket = io();
+const socket = io({
+  transports: ['websocket']
+});
 
 // ===== VARIABLES =====
 let marker;
