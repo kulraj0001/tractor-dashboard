@@ -88,6 +88,7 @@
   <button onclick="startSelection()">Start Area</button>
   <button onclick="endSelection()">End Area</button>
   <button onclick="clearArea()">Clear Area</button>
+  <button onclick="enableNotifications()">Enable Notifications</button>
 </div>
 
 <div id="alertBox" class="alert">🚨 Tractor OUTSIDE geofence!</div>
@@ -359,6 +360,33 @@ function calculateArea(points) {
   }
 
   return Math.abs(area / 2) * 111000 * 111000;
+}
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js")
+    .then(() => {
+      console.log("✅ Service Worker registered");
+    })
+    .catch((error) => {
+      console.error("❌ Service Worker registration failed:", error);
+    });
+}
+async function enableNotifications() {
+  if (!("Notification" in window)) {
+    alert("This browser does not support notifications");
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+
+  if (permission === "granted") {
+    alert("Notifications enabled successfully");
+
+    new Notification("🚜 Tractor Tracker", {
+      body: "Notifications are now enabled for geofence alerts."
+    });
+  } else {
+    alert("Notifications permission denied");
+  }
 }
 </script>
 
