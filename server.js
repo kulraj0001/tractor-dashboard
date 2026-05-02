@@ -30,8 +30,11 @@ app.post('/api/tractor', (req, res) => {
 
   console.log("DATA RECEIVED:", req.body);
 
-  // ✅ OLD SIMPLE KEY CHECK
-  if (req.body.key !== "PAU123") {
+  const API_KEY = "PAU4563";
+
+  // 🔐 Safe key check
+  if (req.body.key !== API_KEY) {
+    console.log("❌ Invalid key:", req.body.key);
     return res.status(403).json({ error: "Unauthorized" });
   }
 
