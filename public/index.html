@@ -55,6 +55,16 @@
       display: none;
       z-index: 1000;
     }
+
+    /* ✅ FIX: ensure toggle visible */
+    .leaflet-control-layers {
+      z-index: 9999 !important;
+    }
+
+    @media (max-width: 600px) {
+      .panel { font-size: 12px; }
+      .controls button { font-size: 12px; width: 110px; }
+    }
   </style>
 </head>
 
@@ -66,20 +76,10 @@
   📍 <span id="position">-</span><br>
   🚜 Speed: <span id="speed">-</span><br>
   🛰️ Sats: <span id="sats">-</span><br>
-  ⏱ Runtime: <span id="runtime">0</span> sec<br>
-  📐 Area: <span id="area">0</span> m²<br>
-  Mode: <span id="mode">Follow ON</span>
 </div>
 
 <div class="controls">
   <button onclick="toggleFollow()">Follow</button>
-  <button onclick="startGeofence()">Start Geofence</button>
-  <button onclick="finishGeofence()">Finish Geofence</button>
-  <button onclick="clearGeofence()">Clear Geofence</button>
-
-  <button onclick="startSelection()">Start Area</button>
-  <button onclick="endSelection()">End Area</button>
-  <button onclick="clearArea()">Clear Area</button>
 </div>
 
 <div id="alertBox" class="alert">🚨 Tractor OUTSIDE geofence!</div>
@@ -90,46 +90,43 @@
 <script>
 const map = L.map('map').setView([30.8549, 75.6909], 18);
 
-const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
+// ===== STREET =====
+const street = L.tileLayer(
+  'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+);
+
+// ===== SATELLITE =====
+const satellite = L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+);
+
+// default layer
 street.addTo(map);
 
-// ===== SOCKET =====
-const socket = io({
-  transports: ['websocket']
-});
+// ===== TOGGLE CONTROL =====
+L.control.layers(
+  {
+    "Street": street,
+    "Satellite": satellite
+  },
+  {},
+  {
+    position: 'bottomleft'
+  }
+).addTo(map);
 
 // ===== VARIABLES =====
 let marker;
-let pathCoords = [];
-let polyline = L.polyline([], { color: 'blue' }).addTo(map);
-
 let follow = true;
-let alertShown = false;
-
-let geofenceMarkers = [];
-let areaMarkers = [];
-
-let geofencePoints = [];
-let geofencePolygon = null;
-let drawingFence = false;
-
-let selectingArea = false;
-let selectedPoints = [];
-let areaPolygon = null;
 
 // ===== FOLLOW =====
 function toggleFollow() {
   follow = !follow;
-  document.getElementById("mode").textContent =
-    follow ? "Follow ON" : "Follow OFF";
 }
 
-map.on('dragstart zoomstart', () => {
-  follow = false;
-  document.getElementById("mode").textContent = "Follow OFF";
-});
+// ===== SOCKET =====
+const socket = io();
 
-// ===== SOCKET DATA =====
 socket.on("tractorUpdate", (data) => {
 
   if (!data.lat) return;
@@ -149,166 +146,8 @@ socket.on("tractorUpdate", (data) => {
   if (!marker) marker = L.marker([lat, lng]).addTo(map);
   else marker.setLatLng([lat, lng]);
 
-  pathCoords.push([lat, lng]);
-  if (pathCoords.length > 1000) pathCoords.shift();
-
-  polyline.setLatLngs(pathCoords);
-
-  if (geofencePoints.length > 2) {
-    const inside = isInsidePolygon([lat, lng], geofencePoints);
-
-    if (!inside && !alertShown) {
-      showAlert();
-      alertShown = true;
-    }
-
-    if (inside && alertShown) {
-      hideAlert();
-      alertShown = false;
-    }
-  }
-
   if (follow) map.panTo([lat, lng]);
 });
-
-// ===== RUNTIME =====
-setInterval(async () => {
-  const res = await fetch('/api/runtime');
-  const data = await res.json();
-
-  document.getElementById("runtime").textContent =
-    (data.runtime / 1000).toFixed(1);
-}, 2000);
-
-// ===== ALERT =====
-function showAlert() {
-  document.getElementById("alertBox").style.display = "block";
-}
-function hideAlert() {
-  document.getElementById("alertBox").style.display = "none";
-}
-
-// ===== MAP CLICK =====
-map.on('click', function(e) {
-
-  if (drawingFence) {
-    const m = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
-    geofenceMarkers.push(m);
-    geofencePoints.push([e.latlng.lat, e.latlng.lng]);
-  }
-
-  if (selectingArea) {
-    const m = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
-    areaMarkers.push(m);
-    selectedPoints.push([e.latlng.lat, e.latlng.lng]);
-  }
-});
-
-// ===== GEOFENCE =====
-function startGeofence() {
-  drawingFence = true;
-  geofencePoints = [];
-
-  geofenceMarkers.forEach(m => map.removeLayer(m));
-  geofenceMarkers = [];
-
-  alert("Click to draw boundary");
-}
-
-function finishGeofence() {
-  drawingFence = false;
-
-  if (geofencePolygon) map.removeLayer(geofencePolygon);
-
-  geofencePolygon = L.polygon(geofencePoints, { color: "red" }).addTo(map);
-
-  localStorage.setItem("geofence", JSON.stringify(geofencePoints));
-}
-
-function clearGeofence() {
-  if (geofencePolygon) map.removeLayer(geofencePolygon);
-
-  geofenceMarkers.forEach(m => map.removeLayer(m));
-  geofenceMarkers = [];
-
-  geofencePoints = [];
-  localStorage.removeItem("geofence");
-
-  alert("Geofence cleared");
-}
-
-// ===== AREA =====
-function startSelection() {
-  selectingArea = true;
-  selectedPoints = [];
-
-  areaMarkers.forEach(m => map.removeLayer(m));
-  areaMarkers = [];
-}
-
-function endSelection() {
-  selectingArea = false;
-
-  if (selectedPoints.length < 3) {
-    alert("Need 3 points");
-    return;
-  }
-
-  const area = calculateArea(selectedPoints);
-  document.getElementById("area").textContent = area.toFixed(2);
-
-  if (areaPolygon) map.removeLayer(areaPolygon);
-
-  areaPolygon = L.polygon(selectedPoints, { color: "green" }).addTo(map);
-
-  areaMarkers.forEach(m => map.removeLayer(m));
-  areaMarkers = [];
-}
-
-function clearArea() {
-  if (areaPolygon) map.removeLayer(areaPolygon);
-
-  areaMarkers.forEach(m => map.removeLayer(m));
-  areaMarkers = [];
-
-  selectedPoints = [];
-
-  document.getElementById("area").textContent = "0";
-
-  alert("Area cleared");
-}
-
-// ===== POLYGON CHECK =====
-function isInsidePolygon(point, polygon) {
-  let x = point[0], y = point[1];
-  let inside = false;
-
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    let xi = polygon[i][0], yi = polygon[i][1];
-    let xj = polygon[j][0], yj = polygon[j][1];
-
-    let intersect =
-      ((yi > y) !== (yj > y)) &&
-      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-
-    if (intersect) inside = !inside;
-  }
-
-  return inside;
-}
-
-// ===== AREA CALC =====
-function calculateArea(points) {
-  let area = 0;
-
-  for (let i = 0; i < points.length; i++) {
-    let j = (i + 1) % points.length;
-    area += (points[i][0] * points[j][1] -
-             points[j][0] * points[i][1]);
-  }
-
-  return Math.abs(area / 2) * 111000 * 111000;
-}
 </script>
 
 </body>
