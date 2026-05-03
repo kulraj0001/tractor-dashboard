@@ -3,7 +3,7 @@ const http = require('http');
 const cors = require('cors');
 const { Server } = require("socket.io");
 const webpush = require('web-push');
-const mqtt = require('mqtt');
+
 const app = express();
 webpush.setVapidDetails(
   'mailto:your-kulrajsekhon0001@gmail.com',
@@ -32,63 +32,8 @@ let totalRuntime = 0;
 let pushSubscriptions = [];
 let tractorOutsideGeofence = false;
 
-const MQTT_URL = process.env.MQTT_URL;
-const MQTT_USERNAME = process.env.MQTT_USERNAME;
-const MQTT_PASSWORD = process.env.MQTT_PASSWORD;
-const MQTT_TOPIC = "tractor/kulraj/live";
 
 
-// 📡 MQTT CLIENT
-if (MQTT_URL) {
-  const mqttClient = mqtt.connect(MQTT_URL, {
-    username: MQTT_USERNAME,
-    password: MQTT_PASSWORD,
-    reconnectPeriod: 5000
-  });
-
-  mqttClient.on("connect", () => {
-    console.log("✅ MQTT connected");
-
-    mqttClient.subscribe(MQTT_TOPIC, (err) => {
-      if (err) {
-        console.log("❌ MQTT subscribe error:", err.message);
-      } else {
-        console.log("📡 Subscribed to:", MQTT_TOPIC);
-      }
-    });
-  });
-
-  mqttClient.on("message", async (topic, message) => {
-    try {
-      const p = JSON.parse(message.toString());
-
-      if (p.key !== "PAU4563") {
-        console.log("❌ MQTT invalid key");
-        return;
-      }
-
-      lastData = {
-        lat: parseFloat(p.lat),
-        lng: parseFloat(p.lng),
-        speed: p.speed || 0,
-        sats: p.sats || 0
-      };
-
-      console.log("📡 MQTT DATA:", lastData);
-
-      io.emit("tractorUpdate", lastData);
-
-    } catch (err) {
-      console.log("❌ MQTT message error:", err.message);
-    }
-  });
-
-  mqttClient.on("error", (err) => {
-    console.log("❌ MQTT error:", err.message);
-  });
-} else {
-  console.log("⚠️ MQTT_URL not set, MQTT disabled");
-}
 
 
 
