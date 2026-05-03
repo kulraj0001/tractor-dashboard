@@ -56,9 +56,11 @@
     .leaflet-control-layers {
       z-index: 9999 !important;
     }
-.leaflet-bottom.leaflet-right {
-  bottom: 80px !important;
-  right: 10px !important;
+@media (max-width: 600px) {
+  .leaflet-bottom.leaflet-right {
+    bottom: 100px !important;
+    right: 10px !important;
+  }
 }
 
     @media (max-width: 600px) {
