@@ -39,18 +39,51 @@ let tractorOutsideGeofence = false;
 
 // 🚜 RECEIVE DATA FROM ESP32
 // 🚜 RECEIVE DATA FROM ESP32
+// 🚜 RECEIVE DATA FROM ESP32
 app.post('/api/tractor', async (req, res) => {
 
   console.log("DATA RECEIVED:", req.body);
 
   const API_KEY = "PAU4563";
 
-  // 🔐 Safe key check
   if (req.body.key !== API_KEY) {
     console.log("❌ Invalid key:", req.body.key);
     return res.status(403).json({ error: "Unauthorized" });
   }
 
+  // ✅ BATCH MODE
+  if (Array.isArray(req.body.points)) {
+    const cleanPoints = req.body.points
+      .map(p => ({
+        lat: parseFloat(p.lat),
+        lng: parseFloat(p.lng),
+        speed: p.speed || 0,
+        sats: p.sats || 0
+      }))
+      .filter(p =>
+        !isNaN(p.lat) &&
+        !isNaN(p.lng) &&
+        p.lat >= -90 &&
+        p.lat <= 90 &&
+        p.lng >= -180 &&
+        p.lng <= 180
+      );
+
+    if (cleanPoints.length === 0) {
+      return res.status(400).json({ error: "No valid points" });
+    }
+
+    lastData = cleanPoints[cleanPoints.length - 1];
+
+    io.emit("tractorBatch", cleanPoints);
+
+    return res.json({
+      status: "batch received",
+      count: cleanPoints.length
+    });
+  }
+
+  // ✅ OLD SINGLE POINT MODE
   const p = req.body;
 
   lastData = {
@@ -61,36 +94,6 @@ app.post('/api/tractor', async (req, res) => {
   };
 
   io.emit("tractorUpdate", lastData);
-
-  // 🚧 SERVER-SIDE GEOFENCE CHECK
-  if (
-    geofencePoints.length > 2 &&
-    !isNaN(lastData.lat) &&
-    !isNaN(lastData.lng)
-  ) {
-    const inside = isInsidePolygon(
-      [lastData.lat, lastData.lng],
-      geofencePoints
-    );
-
-    // Tractor just went outside
-    if (!inside && !tractorOutsideGeofence) {
-      tractorOutsideGeofence = true;
-
-      console.log("🚨 Tractor OUTSIDE geofence - sending push notification");
-
-      await sendPushNotification(
-        "🚨 Tractor Alert",
-        "Tractor is outside the geofence!"
-      );
-    }
-
-    // Tractor came back inside
-    if (inside && tractorOutsideGeofence) {
-      tractorOutsideGeofence = false;
-      console.log("✅ Tractor back inside geofence");
-    }
-  }
 
   res.json({ status: 'received' });
 });

@@ -166,7 +166,7 @@ map.on('dragstart zoomstart', () => {
 });
 
 // ===== LIVE DATA FROM WEBSOCKET =====
-socket.on("tractorUpdate", (data) => {
+function handleTractorPoint(data) {
   if (!data || !data.lat || !data.lng) return;
 
   const lat = data.lat;
@@ -204,6 +204,18 @@ socket.on("tractorUpdate", (data) => {
   }
 
   if (follow) map.panTo([lat, lng]);
+}
+
+// Single point support
+socket.on("tractorUpdate", (data) => {
+  handleTractorPoint(data);
+});
+
+// Batch point support
+socket.on("tractorBatch", (points) => {
+  points.forEach(point => {
+    handleTractorPoint(point);
+  });
 });
 
 // ===== RUNTIME =====
