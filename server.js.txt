@@ -6,7 +6,7 @@ const webpush = require('web-push');
 
 const app = express();
 webpush.setVapidDetails(
-  'mailto:your-email@example.com',
+  'mailto:your-kulrajsekhon0001@gmail.com',
   'BBEoPLnv2vekpNIvdju7yGhW3P5hZiGn1PIPme0CfbVGUPBujYUceBJ1hlU8KOgQVJe0ScUri4cHV-GmVVZKDAQ',
   'rbrHfLtLOABd8ZwntsceJwGOD8UHk3kOeghtc7lFG04'
 );
@@ -30,11 +30,14 @@ let geofencePoints = [];
 let engineStart = null;
 let totalRuntime = 0;
 let pushSubscriptions = [];
+let tractorOutsideGeofence = false;
+
 
 
 
 // 🚜 RECEIVE DATA FROM ESP32
-app.post('/api/tractor', (req, res) => {
+// 🚜 RECEIVE DATA FROM ESP32
+app.post('/api/tractor', async (req, res) => {
 
   console.log("DATA RECEIVED:", req.body);
 
@@ -57,6 +60,36 @@ app.post('/api/tractor', (req, res) => {
 
   io.emit("tractorUpdate", lastData);
 
+  // 🚧 SERVER-SIDE GEOFENCE CHECK
+  if (
+    geofencePoints.length > 2 &&
+    !isNaN(lastData.lat) &&
+    !isNaN(lastData.lng)
+  ) {
+    const inside = isInsidePolygon(
+      [lastData.lat, lastData.lng],
+      geofencePoints
+    );
+
+    // Tractor just went outside
+    if (!inside && !tractorOutsideGeofence) {
+      tractorOutsideGeofence = true;
+
+      console.log("🚨 Tractor OUTSIDE geofence - sending push notification");
+
+      await sendPushNotification(
+        "🚨 Tractor Alert",
+        "Tractor is outside the geofence!"
+      );
+    }
+
+    // Tractor came back inside
+    if (inside && tractorOutsideGeofence) {
+      tractorOutsideGeofence = false;
+      console.log("✅ Tractor back inside geofence");
+    }
+  }
+
   res.json({ status: 'received' });
 });
 // 📡 LIVE DATA
@@ -76,9 +109,13 @@ app.get('/api/runtime', (req, res) => {
 
 
 // 🚧 GEOFENCE
+// 🚧 GEOFENCE
 app.post('/api/geofence', (req, res) => {
   geofencePoints = req.body.points || [];
+  tractorOutsideGeofence = false;
+
   console.log("📍 Geofence saved:", geofencePoints);
+
   res.json({ status: "saved" });
 });
 
@@ -131,7 +168,52 @@ app.get('/api/test-notification', async (req, res) => {
   }
 });
 
+// ===== POLYGON CHECK =====
+function isInsidePolygon(point, polygon) {
+  let x = point[0], y = point[1];
+  let inside = false;
 
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    let xi = polygon[i][0], yi = polygon[i][1];
+    let xj = polygon[j][0], yj = polygon[j][1];
+
+    let intersect =
+      ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+// 🔔 SEND PUSH NOTIFICATION
+async function sendPushNotification(title, body) {
+  if (pushSubscriptions.length === 0) {
+    console.log("⚠️ No push subscriptions saved");
+    return;
+  }
+
+  const payload = JSON.stringify({
+    title,
+    body
+  });
+
+  const validSubscriptions = [];
+
+  await Promise.all(
+    pushSubscriptions.map(async (sub) => {
+      try {
+        await webpush.sendNotification(sub, payload);
+        validSubscriptions.push(sub);
+      } catch (err) {
+        console.log("❌ Push send error:", err.message);
+      }
+    })
+  );
+
+  pushSubscriptions = validSubscriptions;
+}
 // 🔌 SOCKET CONNECTION
 io.on("connection", (socket) => {
   console.log("🔌 Client connected:", socket.id);
