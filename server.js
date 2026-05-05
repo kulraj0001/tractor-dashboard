@@ -1,14 +1,15 @@
-const express = require('express');
-const http = require('http');
-const cors = require('cors');
-const { Server } = require("socket.io");
+const express = require("express");
+const http = require("http");
+const cors = require("cors");
 const mqtt = require("mqtt");
+const webpush = require("web-push");
+const { Server } = require("socket.io");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static("public"));
 
 const server = http.createServer(app);
 
@@ -17,41 +18,158 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// ===== SECURITY =====
-const API_KEY = "PAU4563";
+// ================= CONFIG =================
 
-// ===== MQTT SETTINGS =====
+// 🔐 API KEY
+const API_KEY = process.env.API_KEY || "PAU4563";
+
+// 📡 MQTT CONFIG
 const MQTT_URL = process.env.MQTT_URL || "mqtt://broker.hivemq.com:1883";
-const MQTT_TOPIC = process.env.MQTT_TOPIC || "tractor/kulraj/live";
+const MQTT_USERNAME = process.env.MQTT_USERNAME || "";
+const MQTT_PASSWORD = process.env.MQTT_PASSWORD || "";
 
-const mqttOptions = {};
+// IMPORTANT: This topic must be exactly same as ESP32 mqttTopic
+const MQTT_TOPIC =
+  process.env.MQTT_TOPIC || "tractor/kulraj/live";
 
-if (process.env.MQTT_USERNAME) {
-  mqttOptions.username = process.env.MQTT_USERNAME;
+// 🔔 VAPID CONFIG
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+const VAPID_EMAIL = process.env.VAPID_EMAIL || "mailto:your-email@example.com";
+
+let pushEnabled = false;
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    VAPID_EMAIL,
+    VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY
+  );
+
+  pushEnabled = true;
+  console.log("🔔 Web Push enabled");
+} else {
+  console.log("⚠️ VAPID keys not set, push notifications disabled");
 }
 
-if (process.env.MQTT_PASSWORD) {
-  mqttOptions.password = process.env.MQTT_PASSWORD;
-}
+// ================= VARIABLES =================
 
 let lastData = null;
 let history = [];
 
 let geofencePoints = [];
+let tractorOutsideGeofence = false;
 
 let engineStart = null;
 let totalRuntime = 0;
 
-// =========================
-// 📡 MQTT CLIENT
-// =========================
-console.log("📡 Connecting to MQTT broker:", MQTT_URL);
-console.log("📡 MQTT topic:", MQTT_TOPIC);
+let pushSubscriptions = [];
+
+// ================= HEALTH CHECK =================
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "Smart Tractor Tracker",
+    time: new Date().toISOString(),
+    mqttUrl: MQTT_URL,
+    mqttTopic: MQTT_TOPIC
+  });
+});
+
+// ================= COMMON DATA HANDLER =================
+
+async function handleTractorData(p, source = "unknown") {
+  if (!p || p.key !== API_KEY) {
+    console.log(`❌ Invalid key from ${source}`);
+    return false;
+  }
+
+  const lat = parseFloat(p.lat);
+  const lng = parseFloat(p.lng);
+
+  if (
+    isNaN(lat) ||
+    isNaN(lng) ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    console.log(`❌ Invalid GPS data from ${source}:`, p);
+    return false;
+  }
+
+  lastData = {
+    lat,
+    lng,
+    speed: parseFloat(p.speed) || 0,
+    sats: parseInt(p.sats) || 0
+  };
+
+  history.push({
+    ...lastData,
+    time: Date.now(),
+    source
+  });
+
+  if (history.length > 1000) {
+    history.shift();
+  }
+
+  console.log(`📡 ${source} DATA:`, lastData);
+
+  io.emit("tractorUpdate", lastData);
+
+  // 🚧 SERVER-SIDE GEOFENCE CHECK
+  if (geofencePoints.length > 2) {
+    const inside = isInsidePolygon(
+      [lastData.lat, lastData.lng],
+      geofencePoints
+    );
+
+    if (!inside && !tractorOutsideGeofence) {
+      tractorOutsideGeofence = true;
+
+      console.log("🚨 Tractor OUTSIDE geofence");
+
+      await sendPushNotification(
+        "🚨 Tractor Alert",
+        "Tractor is outside the geofence!"
+      );
+    }
+
+    if (inside && tractorOutsideGeofence) {
+      tractorOutsideGeofence = false;
+      console.log("✅ Tractor back inside geofence");
+    }
+  }
+
+  return true;
+}
+
+// ================= MQTT CLIENT =================
+
+const mqttOptions = {
+  reconnectPeriod: 5000,
+  keepalive: 30,
+  clean: true,
+  clientId: "render_tractor_server_" + Math.random().toString(16).slice(2)
+};
+
+if (MQTT_USERNAME) {
+  mqttOptions.username = MQTT_USERNAME;
+}
+
+if (MQTT_PASSWORD) {
+  mqttOptions.password = MQTT_PASSWORD;
+}
 
 const mqttClient = mqtt.connect(MQTT_URL, mqttOptions);
 
 mqttClient.on("connect", () => {
   console.log("✅ MQTT connected");
+  console.log("📡 MQTT URL:", MQTT_URL);
 
   mqttClient.subscribe(MQTT_TOPIC, (err) => {
     if (err) {
@@ -62,83 +180,15 @@ mqttClient.on("connect", () => {
   });
 });
 
-mqttClient.on("message", (topic, message) => {
+mqttClient.on("message", async (topic, message) => {
+  console.log("📩 Raw MQTT message received on topic:", topic);
+
   try {
-    const text = message.toString();
-    console.log("📡 MQTT DATA:", text);
-
-    const p = JSON.parse(text);
-
-    // 🔐 Key check
-    if (p.key !== API_KEY) {
-      console.log("❌ MQTT invalid key");
-      return;
-    }
-
-    // ✅ Single point mode
-    if (p.lat !== undefined && p.lng !== undefined) {
-      const cleanPoint = {
-        lat: parseFloat(p.lat),
-        lng: parseFloat(p.lng),
-        speed: Number(p.speed || 0),
-        sats: Number(p.sats || 0)
-      };
-
-      if (!isValidPoint(cleanPoint)) {
-        console.log("❌ MQTT invalid GPS point");
-        return;
-      }
-
-      lastData = cleanPoint;
-      history.push(cleanPoint);
-      if (history.length > 1000) history.shift();
-
-      io.emit("tractorUpdate", cleanPoint);
-
-      console.log("✅ MQTT point forwarded to dashboard:", cleanPoint);
-      return;
-    }
-
-    // ✅ Optional batch mode support
-    if (Array.isArray(p.points)) {
-      const cleanPoints = p.points
-        .map(point => ({
-          lat: parseFloat(point.lat),
-          lng: parseFloat(point.lng),
-          speed: Number(point.speed || 0),
-          sats: Number(point.sats || 0)
-        }))
-        .filter(isValidPoint);
-
-      if (cleanPoints.length === 0) {
-        console.log("❌ MQTT batch has no valid points");
-        return;
-      }
-
-      lastData = cleanPoints[cleanPoints.length - 1];
-
-      cleanPoints.forEach(point => {
-        history.push(point);
-        io.emit("tractorUpdate", point);
-      });
-
-      if (history.length > 1000) {
-        history = history.slice(-1000);
-      }
-
-      console.log("✅ MQTT batch forwarded:", cleanPoints.length, "points");
-      return;
-    }
-
-    console.log("❌ MQTT unknown payload format");
-
+    const p = JSON.parse(message.toString());
+    await handleTractorData(p, "MQTT");
   } catch (err) {
-    console.log("❌ MQTT message parse error:", err.message);
+    console.log("❌ MQTT message error:", err.message);
   }
-});
-
-mqttClient.on("error", (err) => {
-  console.log("❌ MQTT error:", err.message);
 });
 
 mqttClient.on("reconnect", () => {
@@ -149,128 +199,183 @@ mqttClient.on("close", () => {
   console.log("⚠️ MQTT connection closed");
 });
 
-// =========================
-// 🚜 RECEIVE DATA FROM ESP32 BY HTTP
-// Keep this route also, so old HTTP code can still work if needed.
-// =========================
-app.post('/api/tractor', (req, res) => {
-
-  console.log("DATA RECEIVED:", req.body);
-
-  // 🔐 Safe key check
-  if (req.body.key !== API_KEY) {
-    console.log("❌ Invalid key:", req.body.key);
-    return res.status(403).json({ error: "Unauthorized" });
-  }
-
-  // ✅ Optional batch support
-  if (Array.isArray(req.body.points)) {
-    const cleanPoints = req.body.points
-      .map(point => ({
-        lat: parseFloat(point.lat),
-        lng: parseFloat(point.lng),
-        speed: Number(point.speed || 0),
-        sats: Number(point.sats || 0)
-      }))
-      .filter(isValidPoint);
-
-    if (cleanPoints.length === 0) {
-      return res.status(400).json({ error: "No valid points" });
-    }
-
-    lastData = cleanPoints[cleanPoints.length - 1];
-
-    cleanPoints.forEach(point => {
-      history.push(point);
-      io.emit("tractorUpdate", point);
-    });
-
-    if (history.length > 1000) {
-      history = history.slice(-1000);
-    }
-
-    return res.json({
-      status: "batch received",
-      count: cleanPoints.length
-    });
-  }
-
-  // ✅ Old single point HTTP mode
-  const p = req.body;
-
-  const cleanPoint = {
-    lat: parseFloat(p.lat),
-    lng: parseFloat(p.lng),
-    speed: Number(p.speed || 0),
-    sats: Number(p.sats || 0)
-  };
-
-  if (!isValidPoint(cleanPoint)) {
-    return res.status(400).json({ error: "Invalid GPS data" });
-  }
-
-  lastData = cleanPoint;
-  history.push(cleanPoint);
-  if (history.length > 1000) history.shift();
-
-  io.emit("tractorUpdate", cleanPoint);
-
-  res.json({ status: 'received' });
+mqttClient.on("offline", () => {
+  console.log("⚠️ MQTT offline");
 });
 
-// 📡 LIVE DATA
-app.get('/api/tractor', (req, res) => {
+mqttClient.on("error", (err) => {
+  console.log("❌ MQTT error:", err.message);
+});
+
+// ================= OLD HTTP BACKUP ROUTE =================
+
+app.post("/api/tractor", async (req, res) => {
+  console.log("HTTP DATA RECEIVED:", req.body);
+
+  const ok = await handleTractorData(req.body, "HTTP");
+
+  if (!ok) {
+    return res.status(403).json({ error: "Invalid data" });
+  }
+
+  res.json({ status: "received" });
+});
+
+// ================= LIVE DATA =================
+
+app.get("/api/tractor", (req, res) => {
   res.json(lastData || {});
 });
 
-// 📜 HISTORY
-app.get('/api/history', (req, res) => {
+app.get("/api/history", (req, res) => {
   res.json(history);
 });
 
-// ⏱ RUNTIME
-app.get('/api/runtime', (req, res) => {
+// ================= RUNTIME =================
+
+app.get("/api/runtime", (req, res) => {
   let runtime = totalRuntime;
+
   if (engineStart) {
-    runtime += (Date.now() - engineStart);
+    runtime += Date.now() - engineStart;
   }
+
   res.json({ runtime });
 });
 
-// 🚧 GEOFENCE
-app.post('/api/geofence', (req, res) => {
+// ================= GEOFENCE =================
+
+app.post("/api/geofence", (req, res) => {
   geofencePoints = req.body.points || [];
+  tractorOutsideGeofence = false;
+
   console.log("📍 Geofence saved:", geofencePoints);
+
   res.json({ status: "saved" });
 });
 
-app.get('/api/geofence', (req, res) => {
+app.get("/api/geofence", (req, res) => {
   res.json(geofencePoints);
 });
 
-// 🔌 SOCKET CONNECTION
+// ================= PUSH SUBSCRIPTION =================
+
+app.post("/api/subscribe", (req, res) => {
+  const subscription = req.body;
+
+  if (!subscription || !subscription.endpoint) {
+    return res.status(400).json({ error: "Invalid subscription" });
+  }
+
+  const alreadyExists = pushSubscriptions.some(
+    (sub) => sub.endpoint === subscription.endpoint
+  );
+
+  if (!alreadyExists) {
+    pushSubscriptions.push(subscription);
+    console.log("🔔 Push subscription saved");
+  }
+
+  res.json({ status: "subscribed" });
+});
+
+// ================= TEST PUSH NOTIFICATION =================
+
+app.get("/api/test-notification", async (req, res) => {
+  if (!pushEnabled) {
+    return res.status(500).json({
+      error: "Push notifications disabled. Set VAPID keys."
+    });
+  }
+
+  if (pushSubscriptions.length === 0) {
+    return res.status(400).json({
+      error: "No push subscriptions saved"
+    });
+  }
+
+  await sendPushNotification(
+    "🚜 Smart Tractor Tracker",
+    "Test notification received successfully"
+  );
+
+  res.json({ status: "test notification sent" });
+});
+
+// ================= HELPER: SEND PUSH =================
+
+async function sendPushNotification(title, body) {
+  if (!pushEnabled) {
+    console.log("⚠️ Push disabled, VAPID keys missing");
+    return;
+  }
+
+  if (pushSubscriptions.length === 0) {
+    console.log("⚠️ No push subscriptions saved");
+    return;
+  }
+
+  const payload = JSON.stringify({
+    title,
+    body
+  });
+
+  const validSubscriptions = [];
+
+  await Promise.all(
+    pushSubscriptions.map(async (sub) => {
+      try {
+        await webpush.sendNotification(sub, payload);
+        validSubscriptions.push(sub);
+      } catch (err) {
+        console.log("❌ Push send error:", err.message);
+      }
+    })
+  );
+
+  pushSubscriptions = validSubscriptions;
+}
+
+// ================= HELPER: POLYGON CHECK =================
+
+function isInsidePolygon(point, polygon) {
+  let x = point[0];
+  let y = point[1];
+  let inside = false;
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    let xi = polygon[i][0];
+    let yi = polygon[i][1];
+
+    let xj = polygon[j][0];
+    let yj = polygon[j][1];
+
+    let intersect =
+      yi > y !== yj > y &&
+      x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+// ================= SOCKET CONNECTION =================
+
 io.on("connection", (socket) => {
   console.log("🔌 Client connected:", socket.id);
 
   if (lastData) {
     socket.emit("tractorUpdate", lastData);
   }
+
+  socket.on("disconnect", () => {
+    console.log("❌ Client disconnected:", socket.id);
+  });
 });
 
-// ✅ GPS validation helper
-function isValidPoint(p) {
-  return (
-    p &&
-    !isNaN(p.lat) &&
-    !isNaN(p.lng) &&
-    p.lat >= -90 &&
-    p.lat <= 90 &&
-    p.lng >= -180 &&
-    p.lng <= 180
-  );
-}
+// ================= START SERVER =================
 
-// 🌐 START SERVER
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
