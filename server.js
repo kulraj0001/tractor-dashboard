@@ -28,9 +28,8 @@ const MQTT_URL = process.env.MQTT_URL || "mqtt://broker.hivemq.com:1883";
 const MQTT_USERNAME = process.env.MQTT_USERNAME || "";
 const MQTT_PASSWORD = process.env.MQTT_PASSWORD || "";
 
-// IMPORTANT: This topic must be exactly same as ESP32 mqttTopic
-const MQTT_TOPIC =
-  process.env.MQTT_TOPIC || "tractor/kulraj/live";
+// IMPORTANT: Must match ESP32 mqttTopic exactly
+const MQTT_TOPIC = process.env.MQTT_TOPIC || "tractor/kulraj/live";
 
 // 🔔 VAPID CONFIG
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
@@ -77,7 +76,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ================= COMMON DATA HANDLER =================
+// ================= COMMON TRACTOR DATA HANDLER =================
 
 async function handleTractorData(p, source = "unknown") {
   if (!p || p.key !== API_KEY) {
@@ -151,9 +150,12 @@ async function handleTractorData(p, source = "unknown") {
 // ================= MQTT CLIENT =================
 
 const mqttOptions = {
-  reconnectPeriod: 5000,
-  keepalive: 30,
+  reconnectPeriod: 3000,
+  connectTimeout: 30000,
+  keepalive: 15,
   clean: true,
+  resubscribe: true,
+  protocolVersion: 4,
   clientId: "render_tractor_server_" + Math.random().toString(16).slice(2)
 };
 
@@ -171,7 +173,7 @@ mqttClient.on("connect", () => {
   console.log("✅ MQTT connected");
   console.log("📡 MQTT URL:", MQTT_URL);
 
-  mqttClient.subscribe(MQTT_TOPIC, (err) => {
+  mqttClient.subscribe(MQTT_TOPIC, { qos: 0 }, (err) => {
     if (err) {
       console.log("❌ MQTT subscribe error:", err.message);
     } else {
@@ -207,7 +209,23 @@ mqttClient.on("error", (err) => {
   console.log("❌ MQTT error:", err.message);
 });
 
-// ================= OLD HTTP BACKUP ROUTE =================
+// 💓 Render/MQTT heartbeat log
+setInterval(() => {
+  console.log("💓 Server alive | MQTT connected:", mqttClient.connected);
+}, 30000);
+
+// ================= MQTT STATUS ROUTE =================
+
+app.get("/mqtt-status", (req, res) => {
+  res.json({
+    mqttConnected: mqttClient.connected,
+    topic: MQTT_TOPIC,
+    time: new Date().toISOString(),
+    lastData
+  });
+});
+
+// ================= HTTP BACKUP ROUTE =================
 
 app.post("/api/tractor", async (req, res) => {
   console.log("HTTP DATA RECEIVED:", req.body);
