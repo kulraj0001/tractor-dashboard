@@ -132,6 +132,16 @@ let marker;
 let pathCoords = [];
 let polyline = L.polyline([], { color: 'blue' }).addTo(map);
 
+// ===== SMOOTHING VARIABLES =====
+let displayLat = null;
+let displayLng = null;
+
+let lastPathLat = null;
+let lastPathLng = null;
+
+const markerSmoothFactor = 0.25;     // lower = smoother, higher = faster
+const minPathDistance = 3.0;         // meters, avoids zig-zag path noise
+
 let follow = true;
 let alertShown = false;
 
@@ -181,14 +191,43 @@ function handleTractorPoint(data) {
   document.getElementById("sats").textContent =
     data.sats || 0;
 
-  if (!marker) marker = L.marker([lat, lng]).addTo(map);
-  else marker.setLatLng([lat, lng]);
+  // ===== SMOOTH MARKER POSITION =====
+  displayLat = smoothValue(displayLat, lat, markerSmoothFactor);
+  displayLng = smoothValue(displayLng, lng, markerSmoothFactor);
 
-  pathCoords.push([lat, lng]);
+  if (!marker) {
+    marker = L.marker([displayLat, displayLng]).addTo(map);
+  } else {
+    marker.setLatLng([displayLat, displayLng]);
+  }
+
+  // ===== SMOOTH PATH DRAWING =====
+  // Add a path point only when tractor moved enough distance.
+  // This reduces zig-zag due to GPS noise.
+  if (lastPathLat === null || lastPathLng === null) {
+    pathCoords.push([displayLat, displayLng]);
+    lastPathLat = displayLat;
+    lastPathLng = displayLng;
+  } else {
+    const moved = distanceMeters(
+      lastPathLat,
+      lastPathLng,
+      displayLat,
+      displayLng
+    );
+
+    if (moved >= minPathDistance) {
+      pathCoords.push([displayLat, displayLng]);
+      lastPathLat = displayLat;
+      lastPathLng = displayLng;
+    }
+  }
+
   if (pathCoords.length > 1000) pathCoords.shift();
 
   polyline.setLatLngs(pathCoords);
 
+  // ===== GEOFENCE CHECK =====
   if (geofencePoints.length > 2) {
     const inside = isInsidePolygon([lat, lng], geofencePoints);
 
@@ -203,9 +242,27 @@ function handleTractorPoint(data) {
     }
   }
 
-  if (follow) map.panTo([lat, lng]);
+  if (follow) map.panTo([displayLat, displayLng]);
+}
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const p1 = lat1 * Math.PI / 180;
+  const p2 = lat2 * Math.PI / 180;
+  const dp = (lat2 - lat1) * Math.PI / 180;
+  const dl = (lng2 - lng1) * Math.PI / 180;
+
+  const a =
+    Math.sin(dp / 2) * Math.sin(dp / 2) +
+    Math.cos(p1) * Math.cos(p2) *
+    Math.sin(dl / 2) * Math.sin(dl / 2);
+
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function smoothValue(oldValue, newValue, factor) {
+  if (oldValue === null) return newValue;
+  return oldValue + (newValue - oldValue) * factor;
+}
 // Single point support
 socket.on("tractorUpdate", (data) => {
   handleTractorPoint(data);
