@@ -55,6 +55,7 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 
 let lastData = null;
 let history = [];
+let serverPath = [];
 
 let geofencePoints = [];
 let tractorOutsideGeofence = false;
@@ -105,11 +106,20 @@ async function handleTractorData(p, source = "unknown") {
     speed: parseFloat(p.speed) || 0,
     sats: parseInt(p.sats) || 0
   };
-// ⏱ Start runtime when first valid coordinates arrive
-if (!engineStart) {
-  engineStart = Date.now();
-  console.log("⏱ Runtime started from first GPS data");
-}
+
+  // ⏱ Start runtime when first valid coordinates arrive
+  if (!engineStart) {
+    engineStart = Date.now();
+    console.log("⏱ Runtime started from first GPS data");
+  }
+
+  // 🛣 Save path on server memory
+  serverPath.push([lastData.lat, lastData.lng]);
+
+  // Limit path size so memory does not grow forever
+  if (serverPath.length > 5000) {
+    serverPath.shift();
+  }
 
   history.push({
     ...lastData,
@@ -226,7 +236,8 @@ app.get("/mqtt-status", (req, res) => {
     mqttConnected: mqttClient.connected,
     topic: MQTT_TOPIC,
     time: new Date().toISOString(),
-    lastData
+    lastData,
+    pathPoints: serverPath.length
   });
 });
 
@@ -254,7 +265,25 @@ app.get("/api/history", (req, res) => {
   res.json(history);
 });
 
+// ================= SERVER PATH =================
+
+// 🛣 GET SAVED PATH
+app.get("/api/path", (req, res) => {
+  res.json(serverPath);
+});
+
+// 🧹 CLEAR SAVED PATH
+app.post("/api/path/clear", (req, res) => {
+  serverPath = [];
+  history = [];
+
+  console.log("🧹 Server path cleared");
+
+  res.json({ status: "path cleared" });
+});
+
 // ================= RUNTIME =================
+
 // ⏱ RUNTIME IN HOURS
 app.get("/api/runtime", (req, res) => {
   let runtime = totalRuntime;
