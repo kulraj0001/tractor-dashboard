@@ -124,7 +124,7 @@
   📍 <span id="position">-</span><br>
   🚜 Speed: <span id="speed">-</span><br>
   🛰️ Sats: <span id="sats">-</span><br>
-  ⏱ Runtime: <span id="runtime">0</span> sec<br>
+ ⏱ Runtime: <span id="runtime">0</span> hr<br>
   📏 Distance: <span id="totalDistance">0</span> m<br>
   📐 Area: <span id="area">0</span> m²<br>
   🔁 Overlap: <span id="overlap">0</span>%<br>
@@ -403,12 +403,11 @@ setInterval(async () => {
     const data = await res.json();
 
     document.getElementById("runtime").textContent =
-      (data.runtime / 1000).toFixed(1);
+      (data.hours || 0).toFixed(3);
   } catch (err) {
     console.log("Runtime error:", err);
   }
 }, 2000);
-
 // ===== ALERT =====
 function showAlert() {
   document.getElementById("alertBox").style.display = "block";

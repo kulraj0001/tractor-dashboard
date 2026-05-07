@@ -59,7 +59,7 @@ let history = [];
 let geofencePoints = [];
 let tractorOutsideGeofence = false;
 
-let engineStart = Date.now();
+let engineStart = null;
 let totalRuntime = 0;
 
 let pushSubscriptions = [];
@@ -105,6 +105,11 @@ async function handleTractorData(p, source = "unknown") {
     speed: parseFloat(p.speed) || 0,
     sats: parseInt(p.sats) || 0
   };
+// ⏱ Start runtime when first valid coordinates arrive
+if (!engineStart) {
+  engineStart = Date.now();
+  console.log("⏱ Runtime started from first GPS data");
+}
 
   history.push({
     ...lastData,
@@ -250,7 +255,7 @@ app.get("/api/history", (req, res) => {
 });
 
 // ================= RUNTIME =================
-
+// ⏱ RUNTIME IN HOURS
 app.get("/api/runtime", (req, res) => {
   let runtime = totalRuntime;
 
@@ -258,7 +263,12 @@ app.get("/api/runtime", (req, res) => {
     runtime += Date.now() - engineStart;
   }
 
-  res.json({ runtime });
+  const hours = runtime / (1000 * 60 * 60);
+
+  res.json({
+    runtime,
+    hours
+  });
 });
 
 // ================= GEOFENCE =================
