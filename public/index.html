@@ -132,7 +132,8 @@
 </div>
 
 <div class="controls">
-  <button onclick="toggleFollow()">Follow</button>
+ <button onclick="clearPath()">Clear Path</button> 
+<button onclick="toggleFollow()">Follow</button>
   <button onclick="startGeofence()">Start Geofence</button>
   <button onclick="finishGeofence()">Finish Geofence</button>
   <button onclick="clearGeofence()">Clear Geofence</button>
@@ -194,6 +195,28 @@ socket.on("connect_error", (err) => {
 let marker;
 let pathCoords = [];
 let polyline = L.polyline([], { color: 'blue' }).addTo(map);
+
+// ===== LOAD PATH FROM SERVER AFTER REFRESH =====
+async function loadServerPath() {
+  try {
+    const res = await fetch("/api/path");
+    const savedPath = await res.json();
+
+    if (Array.isArray(savedPath) && savedPath.length > 0) {
+      pathCoords = savedPath;
+      polyline.setLatLngs(pathCoords);
+
+      const lastPoint = pathCoords[pathCoords.length - 1];
+      map.panTo(lastPoint);
+
+      console.log("✅ Server path loaded:", savedPath.length);
+    }
+  } catch (err) {
+    console.log("Path load error:", err);
+  }
+}
+
+loadServerPath();
 
 let follow = true;
 let alertShown = false;
@@ -544,6 +567,28 @@ function clearArea() {
   document.getElementById("overlap").textContent = "0";
 
   alert("Area cleared");
+}
+async function clearPath() {
+  pathCoords = [];
+  polyline.setLatLngs([]);
+
+  totalDistance = 0;
+  lastDistanceLat = null;
+  lastDistanceLng = null;
+
+  document.getElementById("totalDistance").textContent = "0";
+
+  updateOverlapDisplay();
+
+  try {
+    await fetch("/api/path/clear", {
+      method: "POST"
+    });
+  } catch (err) {
+    console.log("Server path clear error:", err);
+  }
+
+  alert("Path cleared");
 }
 
 // ===== POLYGON CHECK =====
