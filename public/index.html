@@ -3,11 +3,18 @@
 <head>
   <title>🚜 Smart Tractor Tracker</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 
   <style>
-    body { margin: 0; font-family: Arial; }
-    #map { height: 100vh; }
+    body {
+      margin: 0;
+      font-family: Arial;
+    }
+
+    #map {
+      height: 100vh;
+    }
 
     .panel {
       position: absolute;
@@ -18,6 +25,26 @@
       border-radius: 10px;
       z-index: 9999;
       font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .width-box {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: white;
+      padding: 8px;
+      border-radius: 8px;
+      z-index: 9999;
+    }
+
+    .width-box input {
+      width: 130px;
+      padding: 6px;
+      border: 1px solid #aaa;
+      border-radius: 5px;
+      text-align: center;
     }
 
     .controls {
@@ -56,18 +83,30 @@
     .leaflet-control-layers {
       z-index: 9999 !important;
     }
-@media (max-width: 600px) {
-  .leaflet-bottom.leaflet-right {
-    bottom: 100px !important;
-    right: 10px !important;
-  }
-}
 
     @media (max-width: 600px) {
-      .panel { font-size: 12px; }
+      .panel {
+        font-size: 12px;
+      }
+
       .controls button {
         font-size: 12px;
         width: 115px;
+      }
+
+      .width-box {
+        top: 10px;
+        left: 55%;
+      }
+
+      .width-box input {
+        width: 105px;
+        font-size: 12px;
+      }
+
+      .leaflet-bottom.leaflet-right {
+        bottom: 100px !important;
+        right: 10px !important;
       }
     }
   </style>
@@ -77,12 +116,18 @@
 
 <div id="map"></div>
 
+<div class="width-box">
+  <input id="implementWidth" type="number" step="0.1" placeholder="Enter width">
+</div>
+
 <div class="panel">
   📍 <span id="position">-</span><br>
   🚜 Speed: <span id="speed">-</span><br>
   🛰️ Sats: <span id="sats">-</span><br>
   ⏱ Runtime: <span id="runtime">0</span> sec<br>
+  📏 Distance: <span id="totalDistance">0</span> m<br>
   📐 Area: <span id="area">0</span> m²<br>
+  🔁 Overlap: <span id="overlap">0</span>%<br>
   Mode: <span id="mode">Follow ON</span>
 </div>
 
@@ -122,25 +167,33 @@ L.control.layers(
   {},
   { position: 'bottomright' }
 ).addTo(map);
+
 // ===== SOCKET =====
 const socket = io({
-  transports: ['websocket']
+  transports: ["websocket", "polling"],
+  upgrade: true,
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+  timeout: 20000
+});
+
+socket.on("connect", () => {
+  console.log("✅ Dashboard connected:", socket.id);
+});
+
+socket.on("disconnect", (reason) => {
+  console.log("❌ Dashboard disconnected:", reason);
+});
+
+socket.on("connect_error", (err) => {
+  console.log("❌ Socket error:", err.message);
 });
 
 // ===== VARIABLES =====
 let marker;
 let pathCoords = [];
 let polyline = L.polyline([], { color: 'blue' }).addTo(map);
-
-// ===== SMOOTHING VARIABLES =====
-let displayLat = null;
-let displayLng = null;
-
-let lastPathLat = null;
-let lastPathLng = null;
-
-const markerSmoothFactor = 0.25;     // lower = smoother, higher = faster
-const minPathDistance = 3.0;         // meters, avoids zig-zag path noise
 
 let follow = true;
 let alertShown = false;
@@ -156,8 +209,27 @@ let selectingArea = false;
 let selectedPoints = [];
 let areaPolygon = null;
 
+// ===== SMOOTHING VARIABLES =====
+let displayLat = null;
+let displayLng = null;
+
+let lastPathLat = null;
+let lastPathLng = null;
+
+const markerSmoothFactor = 0.25;
+const minPathDistance = 3.0;
+
+// ===== DISTANCE + OVERLAP VARIABLES =====
+let totalDistance = 0;
+let insideFieldDistance = 0;
+let fieldArea = 0;
+
+let lastDistanceLat = null;
+let lastDistanceLng = null;
+
 // ===== LOAD SAVED GEOFENCE =====
 const savedFence = localStorage.getItem("geofence");
+
 if (savedFence) {
   geofencePoints = JSON.parse(savedFence);
   geofencePolygon = L.polygon(geofencePoints, { color: "red" }).addTo(map);
@@ -166,6 +238,7 @@ if (savedFence) {
 // ===== FOLLOW =====
 function toggleFollow() {
   follow = !follow;
+
   document.getElementById("mode").textContent =
     follow ? "Follow ON" : "Follow OFF";
 }
@@ -175,8 +248,54 @@ map.on('dragstart zoomstart', () => {
   document.getElementById("mode").textContent = "Follow OFF";
 });
 
+// ===== DISTANCE FUNCTION =====
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+
+  const p1 = lat1 * Math.PI / 180;
+  const p2 = lat2 * Math.PI / 180;
+
+  const dp = (lat2 - lat1) * Math.PI / 180;
+  const dl = (lng2 - lng1) * Math.PI / 180;
+
+  const a =
+    Math.sin(dp / 2) * Math.sin(dp / 2) +
+    Math.cos(p1) * Math.cos(p2) *
+    Math.sin(dl / 2) * Math.sin(dl / 2);
+
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function smoothValue(oldValue, newValue, factor) {
+  if (oldValue === null) return newValue;
+  return oldValue + (newValue - oldValue) * factor;
+}
+
+// ===== OVERLAP DISPLAY =====
+function updateOverlapDisplay() {
+  const width = parseFloat(document.getElementById("implementWidth").value);
+
+  document.getElementById("totalDistance").textContent =
+    totalDistance.toFixed(2);
+
+  if (!width || width <= 0 || fieldArea <= 0) {
+    document.getElementById("overlap").textContent = "0";
+    return;
+  }
+
+  const cultivatedArea = insideFieldDistance * width;
+
+  const overlapPercent =
+    ((cultivatedArea - fieldArea) / fieldArea) * 100;
+
+  document.getElementById("overlap").textContent =
+    overlapPercent.toFixed(2);
+}
+
+document.getElementById("implementWidth").addEventListener("input", updateOverlapDisplay);
+
 // ===== LIVE DATA FROM WEBSOCKET =====
-function handleTractorPoint(data) {
+socket.on("tractorUpdate", (data) => {
   if (!data || !data.lat || !data.lng) return;
 
   const lat = data.lat;
@@ -202,8 +321,6 @@ function handleTractorPoint(data) {
   }
 
   // ===== SMOOTH PATH DRAWING =====
-  // Add a path point only when tractor moved enough distance.
-  // This reduces zig-zag due to GPS noise.
   if (lastPathLat === null || lastPathLng === null) {
     pathCoords.push([displayLat, displayLng]);
     lastPathLat = displayLat;
@@ -223,13 +340,45 @@ function handleTractorPoint(data) {
     }
   }
 
-  if (pathCoords.length > 1000) pathCoords.shift();
+  if (pathCoords.length > 1000) {
+    pathCoords.shift();
+  }
 
   polyline.setLatLngs(pathCoords);
 
-  // ===== GEOFENCE CHECK =====
+  // ===== TOTAL DISTANCE + INSIDE FIELD DISTANCE =====
+  if (lastDistanceLat !== null && lastDistanceLng !== null) {
+    const segmentDistance = distanceMeters(
+      lastDistanceLat,
+      lastDistanceLng,
+      displayLat,
+      displayLng
+    );
+
+    // Total distance is always counted
+    totalDistance += segmentDistance;
+
+    // Inside-field distance is counted only if selected area exists
+    if (selectedPoints.length > 2) {
+      const insideSelectedArea = isInsidePolygon(
+        [displayLat, displayLng],
+        selectedPoints
+      );
+
+      if (insideSelectedArea) {
+        insideFieldDistance += segmentDistance;
+      }
+    }
+
+    updateOverlapDisplay();
+  }
+
+  lastDistanceLat = displayLat;
+  lastDistanceLng = displayLng;
+
+  // ===== GEOFENCE ALERT =====
   if (geofencePoints.length > 2) {
-    const inside = isInsidePolygon([lat, lng], geofencePoints);
+    const inside = isInsidePolygon([displayLat, displayLng], geofencePoints);
 
     if (!inside && !alertShown) {
       showAlert();
@@ -242,37 +391,9 @@ function handleTractorPoint(data) {
     }
   }
 
-  if (follow) map.panTo([displayLat, displayLng]);
-}
-function distanceMeters(lat1, lng1, lat2, lng2) {
-  const R = 6371000;
-  const p1 = lat1 * Math.PI / 180;
-  const p2 = lat2 * Math.PI / 180;
-  const dp = (lat2 - lat1) * Math.PI / 180;
-  const dl = (lng2 - lng1) * Math.PI / 180;
-
-  const a =
-    Math.sin(dp / 2) * Math.sin(dp / 2) +
-    Math.cos(p1) * Math.cos(p2) *
-    Math.sin(dl / 2) * Math.sin(dl / 2);
-
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function smoothValue(oldValue, newValue, factor) {
-  if (oldValue === null) return newValue;
-  return oldValue + (newValue - oldValue) * factor;
-}
-// Single point support
-socket.on("tractorUpdate", (data) => {
-  handleTractorPoint(data);
-});
-
-// Batch point support
-socket.on("tractorBatch", (points) => {
-  points.forEach(point => {
-    handleTractorPoint(point);
-  });
+  if (follow) {
+    map.panTo([displayLat, displayLng]);
+  }
 });
 
 // ===== RUNTIME =====
@@ -331,7 +452,9 @@ function finishGeofence() {
     return;
   }
 
-  if (geofencePolygon) map.removeLayer(geofencePolygon);
+  if (geofencePolygon) {
+    map.removeLayer(geofencePolygon);
+  }
 
   geofencePolygon = L.polygon(geofencePoints, { color: "red" }).addTo(map);
 
@@ -339,13 +462,17 @@ function finishGeofence() {
 
   fetch('/api/geofence', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json'
+    },
     body: JSON.stringify({ points: geofencePoints })
   }).catch(err => console.log("Geofence save error:", err));
 }
 
 function clearGeofence() {
-  if (geofencePolygon) map.removeLayer(geofencePolygon);
+  if (geofencePolygon) {
+    map.removeLayer(geofencePolygon);
+  }
 
   geofenceMarkers.forEach(m => map.removeLayer(m));
   geofenceMarkers = [];
@@ -355,7 +482,9 @@ function clearGeofence() {
 
   fetch('/api/geofence', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json'
+    },
     body: JSON.stringify({ points: [] })
   }).catch(err => console.log("Geofence clear error:", err));
 
@@ -382,9 +511,17 @@ function endSelection() {
   }
 
   const area = calculateArea(selectedPoints);
+  fieldArea = area;
+
   document.getElementById("area").textContent = area.toFixed(2);
 
-  if (areaPolygon) map.removeLayer(areaPolygon);
+  // Start overlap calculation fresh for selected field area
+  insideFieldDistance = 0;
+  updateOverlapDisplay();
+
+  if (areaPolygon) {
+    map.removeLayer(areaPolygon);
+  }
 
   areaPolygon = L.polygon(selectedPoints, { color: "green" }).addTo(map);
 
@@ -393,31 +530,43 @@ function endSelection() {
 }
 
 function clearArea() {
-  if (areaPolygon) map.removeLayer(areaPolygon);
+  if (areaPolygon) {
+    map.removeLayer(areaPolygon);
+  }
 
   areaMarkers.forEach(m => map.removeLayer(m));
   areaMarkers = [];
 
   selectedPoints = [];
+  fieldArea = 0;
+  insideFieldDistance = 0;
+
   document.getElementById("area").textContent = "0";
+  document.getElementById("overlap").textContent = "0";
 
   alert("Area cleared");
 }
 
 // ===== POLYGON CHECK =====
 function isInsidePolygon(point, polygon) {
-  let x = point[0], y = point[1];
+  let x = point[0];
+  let y = point[1];
   let inside = false;
 
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    let xi = polygon[i][0], yi = polygon[i][1];
-    let xj = polygon[j][0], yj = polygon[j][1];
+    let xi = polygon[i][0];
+    let yi = polygon[i][1];
+
+    let xj = polygon[j][0];
+    let yj = polygon[j][1];
 
     let intersect =
       ((yi > y) !== (yj > y)) &&
       (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
 
-    if (intersect) inside = !inside;
+    if (intersect) {
+      inside = !inside;
+    }
   }
 
   return inside;
@@ -429,12 +578,17 @@ function calculateArea(points) {
 
   for (let i = 0; i < points.length; i++) {
     let j = (i + 1) % points.length;
-    area += (points[i][0] * points[j][1] -
-             points[j][0] * points[i][1]);
+
+    area += (
+      points[i][0] * points[j][1] -
+      points[j][0] * points[i][1]
+    );
   }
 
   return Math.abs(area / 2) * 111000 * 111000;
 }
+
+// ===== SERVICE WORKER REGISTER =====
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js")
     .then(() => {
@@ -444,7 +598,28 @@ if ("serviceWorker" in navigator) {
       console.error("❌ Service Worker registration failed:", error);
     });
 }
+
+// ===== PUSH NOTIFICATION HELPER =====
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding)
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+
+  return outputArray;
+}
+
+// ===== ENABLE NOTIFICATIONS =====
 async function enableNotifications() {
+  const VAPID_PUBLIC_KEY = "YOUR_PUBLIC_VAPID_KEY_HERE";
+
   if (!("Notification" in window)) {
     alert("This browser does not support notifications");
     return;
@@ -452,6 +627,11 @@ async function enableNotifications() {
 
   if (!("serviceWorker" in navigator)) {
     alert("Service Worker not supported");
+    return;
+  }
+
+  if (VAPID_PUBLIC_KEY === "BBEoPLnv2vekpNIvdju7yGhW3P5hZiGn1PIPme0CfbVGUPBujYUceBJ1hlU8KOgQVJe0ScUri4cHV-GmVVZKDAQ") {
+    alert("Add your VAPID public key in index.html first");
     return;
   }
 
@@ -466,12 +646,14 @@ async function enableNotifications() {
 
   const subscription = await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: "BBEoPLnv2vekpNIvdju7yGhW3P5hZiGn1PIPme0CfbVGUPBujYUceBJ1hlU8KOgQVJe0ScUri4cHV-GmVVZKDAQ"
+    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
   });
 
-  await fetch('/api/subscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  await fetch("/api/subscribe", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify(subscription)
   });
 
@@ -481,8 +663,7 @@ async function enableNotifications() {
     body: "Notifications are now enabled for geofence alerts."
   });
 }
-
- </script>
+</script>
 
 </body>
 </html>

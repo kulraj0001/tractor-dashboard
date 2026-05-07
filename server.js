@@ -59,7 +59,7 @@ let history = [];
 let geofencePoints = [];
 let tractorOutsideGeofence = false;
 
-let engineStart = null;
+let engineStart = Date.now();
 let totalRuntime = 0;
 
 let pushSubscriptions = [];
