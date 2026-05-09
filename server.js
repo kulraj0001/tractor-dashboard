@@ -62,6 +62,10 @@ let tractorOutsideGeofence = false;
 
 let engineStart = null;
 let totalRuntime = 0;
+let lastCoordinateTime = null;
+
+// If no coordinates come for this time, runtime will pause
+const RUNTIME_STOP_TIMEOUT = 10000; // 10 seconds
 
 let pushSubscriptions = [];
 
@@ -108,10 +112,15 @@ async function handleTractorData(p, source = "unknown") {
   };
 
   // ⏱ Start runtime when first valid coordinates arrive
-  if (!engineStart) {
-    engineStart = Date.now();
-    console.log("⏱ Runtime started from first GPS data");
-  }
+ // ⏱ Runtime runs only while coordinates are coming
+const now = Date.now();
+
+if (!engineStart) {
+  engineStart = now;
+  console.log("⏱ Runtime started from GPS data");
+}
+
+lastCoordinateTime = now;
 
   // 🛣 Save path on server memory
   serverPath.push([lastData.lat, lastData.lng]);
@@ -277,26 +286,48 @@ app.post("/api/path/clear", (req, res) => {
   serverPath = [];
   history = [];
 
-  console.log("🧹 Server path cleared");
+  // Reset runtime also
+  engineStart = null;
+  totalRuntime = 0;
+  lastCoordinateTime = null;
 
-  res.json({ status: "path cleared" });
+  console.log("🧹 Server path cleared");
+  console.log("⏱ Runtime reset");
+
+  res.json({ status: "path and runtime cleared" });
 });
 
 // ================= RUNTIME =================
 
 // ⏱ RUNTIME IN HOURS
+// ⏱ RUNTIME IN HOURS
 app.get("/api/runtime", (req, res) => {
+  const now = Date.now();
+
+  // If coordinates stopped coming, pause runtime
+  if (
+    engineStart &&
+    lastCoordinateTime &&
+    now - lastCoordinateTime > RUNTIME_STOP_TIMEOUT
+  ) {
+    totalRuntime += lastCoordinateTime - engineStart;
+    engineStart = null;
+
+    console.log("⏸ Runtime stopped because GPS data stopped");
+  }
+
   let runtime = totalRuntime;
 
   if (engineStart) {
-    runtime += Date.now() - engineStart;
+    runtime += now - engineStart;
   }
 
   const hours = runtime / (1000 * 60 * 60);
 
   res.json({
     runtime,
-    hours
+    hours,
+    running: !!engineStart
   });
 });
 
