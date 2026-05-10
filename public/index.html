@@ -914,13 +914,10 @@ async function enableNotifications() {
     return;
   }
 
-  if (
-    VAPID_PUBLIC_KEY === "BBEoPLnv2vekpNIvdju7yGhW3P5hZiGn1PIPme0CfbVGUPBujYUceBJ1hlU8KOgQVJe0ScUri4cHV-GmVVZKDAQ" ||
-    VAPID_PUBLIC_KEY.trim() === ""
-  ) {
-    alert("Add your VAPID public key in index.html first");
-    return;
-  }
+ if (VAPID_PUBLIC_KEY.trim() === "") {
+  alert("Add your VAPID public key in index.html first");
+  return;
+}
 
   const permission = await Notification.requestPermission();
 
