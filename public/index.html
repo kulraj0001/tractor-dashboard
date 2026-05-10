@@ -562,12 +562,19 @@ socket.on("tractorUpdate", (data) => {
       displayLng
     );
 
-    totalDistance += segmentDistance;
+    const currentSpeed = parseFloat(data.speed) || 0;
+const distanceSpeedLimit = 1.0; // km/h
 
-    if (insideSelectedArea) {
-      insideFieldDistance += segmentDistance;
-      finalOverlapCalculated = false;
-    }
+// Count distance only when tractor is actually moving.
+// This prevents stationary GNSS drift from increasing distance.
+if (currentSpeed >= distanceSpeedLimit) {
+  totalDistance += segmentDistance;
+
+  if (insideSelectedArea) {
+    insideFieldDistance += segmentDistance;
+    finalOverlapCalculated = false;
+  }
+}
 
     // Total distance updates live, overlap remains 0 until tractor leaves field
     updateOverlapDisplay(false);
