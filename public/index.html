@@ -150,7 +150,9 @@
 <script src="/socket.io/socket.io.js"></script>
 
 <script>
-const map = L.map('map').setView([30.8549, 75.6909], 18);
+const map = L.map('map', {
+  maxZoom: 17
+}).setView([30.8549, 75.6909], 16);
 
 // ===== MAP LAYERS =====
 const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
