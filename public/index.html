@@ -122,11 +122,14 @@
 
 <div class="panel">
   📍 <span id="position">-</span><br>
-  🚜 Speed: <span id="speed">-</span><br>
+  🚜 Speed: <span id="speed">-</span> km/h<br>
   🛰️ Sats: <span id="sats">-</span><br>
   ⏱ Runtime: <span id="runtime">0</span> hr<br>
   📏 Distance: <span id="totalDistance">0</span> m<br>
   📐 Area: <span id="area">0</span> m²<br>
+  🌾 Field Distance: <span id="fieldDistance">0</span> m<br>
+  ⏳ Field Time: <span id="fieldTime">0</span> hr<br>
+  🚜 Avg Field Speed: <span id="avgFieldSpeed">0</span> km/h<br>
   🔁 Overlap: <span id="overlap">0</span>%<br>
   ⚙️ Field Efficiency: <span id="fieldEfficiency">0</span>%<br>
   Mode: <span id="mode">Follow ON</span>
@@ -141,6 +144,7 @@
   <button onclick="startSelection()">Start Area</button>
   <button onclick="endSelection()">End Area</button>
   <button onclick="clearArea()">Clear Area</button>
+  <button onclick="clearFieldData()">Clear Field Data</button>
   <button onclick="enableNotifications()">Enable Notifications</button>
 </div>
 
@@ -154,7 +158,6 @@ const map = L.map('map', {
   maxZoom: 17
 }).setView([30.8549, 75.6909], 16);
 
-// ===== MAP LAYERS =====
 const street = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
 
 const satellite = L.tileLayer(
@@ -172,7 +175,6 @@ L.control.layers(
   { position: 'bottomright' }
 ).addTo(map);
 
-// ===== SOCKET =====
 const socket = io({
   transports: ["websocket", "polling"],
   upgrade: true,
@@ -183,21 +185,23 @@ const socket = io({
 });
 
 socket.on("connect", () => {
-  console.log("✅ Dashboard connected:", socket.id);
+  console.log("Dashboard connected:", socket.id);
 });
 
 socket.on("disconnect", (reason) => {
-  console.log("❌ Dashboard disconnected:", reason);
+  console.log("Dashboard disconnected:", reason);
 });
 
 socket.on("connect_error", (err) => {
-  console.log("❌ Socket error:", err.message);
+  console.log("Socket error:", err.message);
 });
 
-// ===== VARIABLES =====
 let marker;
 let pathCoords = [];
-let polyline = L.polyline([], { color: 'blue' }).addTo(map);
+let polyline = L.polyline([], {
+  color: 'blue',
+  weight: 4
+}).addTo(map);
 
 let follow = true;
 let alertShown = false;
@@ -213,7 +217,6 @@ let selectingArea = false;
 let selectedPoints = [];
 let areaPolygon = null;
 
-// ===== SMOOTHING VARIABLES =====
 let displayLat = null;
 let displayLng = null;
 
@@ -223,7 +226,6 @@ let lastPathLng = null;
 const markerSmoothFactor = 0.25;
 const minPathDistance = 3.0;
 
-// ===== DISTANCE + OVERLAP VARIABLES =====
 let totalDistance = 0;
 let insideFieldDistance = 0;
 let fieldArea = 0;
@@ -233,7 +235,6 @@ let lastDistanceLng = null;
 
 let finalOverlapCalculated = false;
 
-// ===== FIELD EFFICIENCY VARIABLES =====
 let fieldTimerRunning = false;
 let fieldEntryTime = null;
 let fieldElapsedMs = 0;
@@ -244,7 +245,6 @@ let speedCountInsideField = 0;
 let wasInsideField = false;
 let finalFieldEfficiencyCalculated = false;
 
-// ===== LOAD PATH FROM SERVER AFTER REFRESH =====
 async function loadServerPath() {
   try {
     const res = await fetch("/api/path");
@@ -275,7 +275,7 @@ async function loadServerPath() {
 
       map.panTo(lastPoint);
 
-      console.log("✅ Server path loaded:", savedPath.length);
+      console.log("Server path loaded:", savedPath.length);
     }
   } catch (err) {
     console.log("Path load error:", err);
@@ -284,7 +284,6 @@ async function loadServerPath() {
 
 loadServerPath();
 
-// ===== LOAD SAVED GEOFENCE =====
 const savedFence = localStorage.getItem("geofence");
 
 if (savedFence) {
@@ -292,7 +291,6 @@ if (savedFence) {
   geofencePolygon = L.polygon(geofencePoints, { color: "red" }).addTo(map);
 }
 
-// ===== FOLLOW =====
 function toggleFollow() {
   follow = !follow;
 
@@ -305,7 +303,6 @@ map.on('dragstart zoomstart', () => {
   document.getElementById("mode").textContent = "Follow OFF";
 });
 
-// ===== DISTANCE FUNCTION =====
 function distanceMeters(lat1, lng1, lat2, lng2) {
   const R = 6371000;
 
@@ -328,7 +325,6 @@ function smoothValue(oldValue, newValue, factor) {
   return oldValue + (newValue - oldValue) * factor;
 }
 
-// ===== RECALCULATE TOTAL DISTANCE FROM SERVER PATH =====
 function recalculateTotalDistanceFromPath() {
   totalDistance = 0;
 
@@ -350,17 +346,47 @@ function recalculateTotalDistanceFromPath() {
     totalDistance.toFixed(2);
 }
 
-// ===== OVERLAP DISPLAY =====
-// showFinal = false means count internally but do not show overlap yet.
-// showFinal = true means tractor has left field and final overlap is displayed.
+function getFieldTimeMs() {
+  let totalFieldTimeMs = fieldElapsedMs;
+
+  if (fieldTimerRunning && fieldEntryTime) {
+    totalFieldTimeMs += Date.now() - fieldEntryTime;
+  }
+
+  return totalFieldTimeMs;
+}
+
+function getAverageFieldSpeed() {
+  if (speedCountInsideField <= 0) return 0;
+  return speedSumInsideField / speedCountInsideField;
+}
+
+function updateFieldInfoDisplay() {
+  const fieldTimeHours = getFieldTimeMs() / (1000 * 60 * 60);
+  const averageSpeed = getAverageFieldSpeed();
+
+  document.getElementById("fieldDistance").textContent =
+    insideFieldDistance.toFixed(2);
+
+  document.getElementById("fieldTime").textContent =
+    fieldTimeHours.toFixed(3);
+
+  document.getElementById("avgFieldSpeed").textContent =
+    averageSpeed.toFixed(2);
+}
+
 function updateOverlapDisplay(showFinal = false) {
   const width = parseFloat(document.getElementById("implementWidth").value);
 
   document.getElementById("totalDistance").textContent =
     totalDistance.toFixed(2);
 
+  updateFieldInfoDisplay();
+
   if (!showFinal) {
-    document.getElementById("overlap").textContent = "0";
+    if (!finalOverlapCalculated) {
+      document.getElementById("overlap").textContent = "0";
+    }
     return;
   }
 
@@ -378,14 +404,15 @@ function updateOverlapDisplay(showFinal = false) {
     overlapPercent.toFixed(2);
 }
 
-// ===== FIELD EFFICIENCY DISPLAY =====
-// showFinal = false means keep display 0 while tractor is inside field.
-// showFinal = true means tractor has left field and final efficiency is displayed.
 function updateFieldEfficiencyDisplay(showFinal = false) {
   const width = parseFloat(document.getElementById("implementWidth").value);
 
+  updateFieldInfoDisplay();
+
   if (!showFinal) {
-    document.getElementById("fieldEfficiency").textContent = "0";
+    if (!finalFieldEfficiencyCalculated) {
+      document.getElementById("fieldEfficiency").textContent = "0";
+    }
     return;
   }
 
@@ -394,31 +421,23 @@ function updateFieldEfficiencyDisplay(showFinal = false) {
     return;
   }
 
-  let totalFieldTimeMs = fieldElapsedMs;
-
-  if (fieldTimerRunning && fieldEntryTime) {
-    totalFieldTimeMs += Date.now() - fieldEntryTime;
-  }
-
-  const fieldTimeHours = totalFieldTimeMs / (1000 * 60 * 60);
+  const fieldTimeHours = getFieldTimeMs() / (1000 * 60 * 60);
 
   if (fieldTimeHours <= 0 || speedCountInsideField <= 0) {
     document.getElementById("fieldEfficiency").textContent = "0";
     return;
   }
 
-  const averageSpeed = speedSumInsideField / speedCountInsideField; // km/h
+  const averageSpeed = getAverageFieldSpeed();
 
   if (averageSpeed <= 0) {
     document.getElementById("fieldEfficiency").textContent = "0";
     return;
   }
 
-  const actualAreaHa = fieldArea / 10000; // m² to hectare
-
-  const actualFieldCapacity = actualAreaHa / fieldTimeHours; // ha/h
-
-  const theoreticalFieldCapacity = (averageSpeed * width) / 10; // ha/h
+  const actualAreaHa = fieldArea / 10000;
+  const actualFieldCapacity = actualAreaHa / fieldTimeHours;
+  const theoreticalFieldCapacity = (averageSpeed * width) / 10;
 
   if (theoreticalFieldCapacity <= 0) {
     document.getElementById("fieldEfficiency").textContent = "0";
@@ -432,7 +451,6 @@ function updateFieldEfficiencyDisplay(showFinal = false) {
     fieldEfficiency.toFixed(2);
 }
 
-// ===== FIELD EFFICIENCY TIMER =====
 function updateFieldEfficiencyState(isInsideField, speed) {
   const now = Date.now();
 
@@ -444,7 +462,8 @@ function updateFieldEfficiencyState(isInsideField, speed) {
     fieldTimerRunning = true;
     fieldEntryTime = now;
     finalFieldEfficiencyCalculated = false;
-    console.log("⏱ Field timer started");
+    finalOverlapCalculated = false;
+    console.log("Field timer started");
   }
 
   if (isInsideField) {
@@ -457,17 +476,21 @@ function updateFieldEfficiencyState(isInsideField, speed) {
     fieldEntryTime = null;
     fieldTimerRunning = false;
 
+    updateOverlapDisplay(true);
     updateFieldEfficiencyDisplay(true);
+
+    finalOverlapCalculated = true;
     finalFieldEfficiencyCalculated = true;
 
-    console.log("⏱ Field timer stopped");
-    console.log("✅ Final field efficiency calculated after leaving field");
+    console.log("Field timer stopped");
+    console.log("Final overlap and field efficiency calculated");
   }
 
   wasInsideField = isInsideField;
+
+  updateFieldInfoDisplay();
 }
 
-// ===== RESET FIELD EFFICIENCY =====
 function resetFieldEfficiency() {
   fieldTimerRunning = false;
   fieldEntryTime = null;
@@ -480,9 +503,25 @@ function resetFieldEfficiency() {
   finalFieldEfficiencyCalculated = false;
 
   document.getElementById("fieldEfficiency").textContent = "0";
+  document.getElementById("fieldTime").textContent = "0";
+  document.getElementById("avgFieldSpeed").textContent = "0";
 }
 
-// Width affects final overlap and final field efficiency
+function clearFieldData() {
+  insideFieldDistance = 0;
+  finalOverlapCalculated = false;
+
+  resetFieldEfficiency();
+
+  document.getElementById("fieldDistance").textContent = "0";
+  document.getElementById("fieldTime").textContent = "0";
+  document.getElementById("avgFieldSpeed").textContent = "0";
+  document.getElementById("overlap").textContent = "0";
+  document.getElementById("fieldEfficiency").textContent = "0";
+
+  alert("Field efficiency and overlap cleared");
+}
+
 document.getElementById("implementWidth").addEventListener("input", () => {
   if (finalOverlapCalculated) {
     updateOverlapDisplay(true);
@@ -493,7 +532,6 @@ document.getElementById("implementWidth").addEventListener("input", () => {
   }
 });
 
-// ===== LIVE DATA FROM WEBSOCKET =====
 socket.on("tractorUpdate", (data) => {
   if (!data || !data.lat || !data.lng) return;
 
@@ -509,7 +547,6 @@ socket.on("tractorUpdate", (data) => {
   document.getElementById("sats").textContent =
     data.sats || 0;
 
-  // ===== SMOOTH MARKER POSITION =====
   displayLat = smoothValue(displayLat, lat, markerSmoothFactor);
   displayLng = smoothValue(displayLng, lng, markerSmoothFactor);
 
@@ -519,7 +556,6 @@ socket.on("tractorUpdate", (data) => {
     marker.setLatLng([displayLat, displayLng]);
   }
 
-  // ===== SMOOTH PATH DRAWING =====
   if (lastPathLat === null || lastPathLng === null) {
     pathCoords.push([displayLat, displayLng]);
     lastPathLat = displayLat;
@@ -545,7 +581,6 @@ socket.on("tractorUpdate", (data) => {
 
   polyline.setLatLngs(pathCoords);
 
-  // ===== CHECK IF INSIDE SELECTED FIELD AREA =====
   let insideSelectedArea = false;
 
   if (selectedPoints.length > 2) {
@@ -555,7 +590,6 @@ socket.on("tractorUpdate", (data) => {
     );
   }
 
-  // ===== TOTAL DISTANCE + INSIDE FIELD DISTANCE =====
   if (lastDistanceLat !== null && lastDistanceLng !== null) {
     const segmentDistance = distanceMeters(
       lastDistanceLat,
@@ -565,38 +599,27 @@ socket.on("tractorUpdate", (data) => {
     );
 
     const currentSpeed = parseFloat(data.speed) || 0;
-const distanceSpeedLimit = 1.0; // km/h
+    const distanceSpeedLimit = 1.0;
 
-// Count distance only when tractor is actually moving.
-// This prevents stationary GNSS drift from increasing distance.
-if (currentSpeed >= distanceSpeedLimit) {
-  totalDistance += segmentDistance;
+    if (currentSpeed >= distanceSpeedLimit) {
+      totalDistance += segmentDistance;
 
-  if (insideSelectedArea) {
-    insideFieldDistance += segmentDistance;
-    finalOverlapCalculated = false;
-  }
-}
+      if (insideSelectedArea) {
+        insideFieldDistance += segmentDistance;
+        finalOverlapCalculated = false;
+        finalFieldEfficiencyCalculated = false;
+      }
+    }
 
-    // Total distance updates live, overlap remains 0 until tractor leaves field
     updateOverlapDisplay(false);
+    updateFieldEfficiencyDisplay(false);
   }
 
   lastDistanceLat = displayLat;
   lastDistanceLng = displayLng;
 
-  // ===== FINAL OVERLAP AFTER TRACTOR LEAVES FIELD =====
-  // This must run before updateFieldEfficiencyState(), because that function updates wasInsideField.
-  if (wasInsideField && !insideSelectedArea && !finalOverlapCalculated) {
-    updateOverlapDisplay(true);
-    finalOverlapCalculated = true;
-    console.log("✅ Final overlap calculated after leaving field");
-  }
-
-  // ===== FIELD EFFICIENCY =====
   updateFieldEfficiencyState(insideSelectedArea, data.speed || 0);
 
-  // ===== GEOFENCE ALERT =====
   if (geofencePoints.length > 2) {
     const inside = isInsidePolygon([displayLat, displayLng], geofencePoints);
 
@@ -616,7 +639,6 @@ if (currentSpeed >= distanceSpeedLimit) {
   }
 });
 
-// ===== RUNTIME =====
 setInterval(async () => {
   try {
     const res = await fetch('/api/runtime');
@@ -629,7 +651,12 @@ setInterval(async () => {
   }
 }, 2000);
 
-// ===== RECALCULATE INSIDE FIELD DISTANCE FROM EXISTING PATH =====
+setInterval(() => {
+  if (fieldTimerRunning) {
+    updateFieldInfoDisplay();
+  }
+}, 2000);
+
 function recalculateInsideFieldDistance() {
   insideFieldDistance = 0;
 
@@ -659,9 +686,10 @@ function recalculateInsideFieldDistance() {
       insideFieldDistance += segmentDistance;
     }
   }
+
+  updateFieldInfoDisplay();
 }
 
-// ===== ALERT =====
 function showAlert() {
   document.getElementById("alertBox").style.display = "block";
 }
@@ -670,7 +698,6 @@ function hideAlert() {
   document.getElementById("alertBox").style.display = "none";
 }
 
-// ===== MAP CLICK =====
 map.on('click', function(e) {
   if (drawingFence) {
     const m = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
@@ -685,7 +712,6 @@ map.on('click', function(e) {
   }
 });
 
-// ===== GEOFENCE =====
 function startGeofence() {
   drawingFence = true;
   geofencePoints = [];
@@ -743,7 +769,6 @@ function clearGeofence() {
   alert("Geofence cleared");
 }
 
-// ===== AREA =====
 function startSelection() {
   selectingArea = true;
   selectedPoints = [];
@@ -767,12 +792,12 @@ function endSelection() {
 
   document.getElementById("area").textContent = area.toFixed(2);
 
-  // Fresh calculation starts after area selection
   insideFieldDistance = 0;
   finalOverlapCalculated = false;
 
   resetFieldEfficiency();
 
+  document.getElementById("fieldDistance").textContent = "0";
   document.getElementById("overlap").textContent = "0";
   document.getElementById("fieldEfficiency").textContent = "0";
   updateOverlapDisplay(false);
@@ -797,14 +822,15 @@ function clearArea() {
 
   selectedPoints = [];
   fieldArea = 0;
-  insideFieldDistance = 0;
-  finalOverlapCalculated = false;
 
-  resetFieldEfficiency();
+  if (areaPolygon) {
+    map.removeLayer(areaPolygon);
+    areaPolygon = null;
+  }
+
+  clearFieldData();
 
   document.getElementById("area").textContent = "0";
-  document.getElementById("overlap").textContent = "0";
-  document.getElementById("fieldEfficiency").textContent = "0";
 
   alert("Area cleared");
 }
@@ -826,6 +852,7 @@ async function clearPath() {
 
   document.getElementById("totalDistance").textContent = "0";
   document.getElementById("overlap").textContent = "0";
+  document.getElementById("fieldDistance").textContent = "0";
 
   updateOverlapDisplay(false);
 
@@ -840,7 +867,6 @@ async function clearPath() {
   alert("Path cleared");
 }
 
-// ===== POLYGON CHECK =====
 function isInsidePolygon(point, polygon) {
   let x = point[0];
   let y = point[1];
@@ -865,7 +891,6 @@ function isInsidePolygon(point, polygon) {
   return inside;
 }
 
-// ===== AREA CALCULATION =====
 function calculateArea(points) {
   let area = 0;
 
@@ -881,18 +906,16 @@ function calculateArea(points) {
   return Math.abs(area / 2) * 111000 * 111000;
 }
 
-// ===== SERVICE WORKER REGISTER =====
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js")
     .then(() => {
-      console.log("✅ Service Worker registered");
+      console.log("Service Worker registered");
     })
     .catch((error) => {
-      console.error("❌ Service Worker registration failed:", error);
+      console.error("Service Worker registration failed:", error);
     });
 }
 
-// ===== PUSH NOTIFICATION HELPER =====
 function urlBase64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - base64String.length % 4) % 4);
   const base64 = (base64String + padding)
@@ -909,7 +932,6 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
-// ===== ENABLE NOTIFICATIONS =====
 async function enableNotifications() {
   const VAPID_PUBLIC_KEY = "BBEoPLnv2vekpNIvdju7yGhW3P5hZiGn1PIPme0CfbVGUPBujYUceBJ1hlU8KOgQVJe0ScUri4cHV-GmVVZKDAQ";
 
@@ -923,10 +945,10 @@ async function enableNotifications() {
     return;
   }
 
- if (VAPID_PUBLIC_KEY.trim() === "") {
-  alert("Add your VAPID public key in index.html first");
-  return;
-}
+  if (VAPID_PUBLIC_KEY.trim() === "") {
+    alert("Add your VAPID public key in index.html first");
+    return;
+  }
 
   const permission = await Notification.requestPermission();
 
